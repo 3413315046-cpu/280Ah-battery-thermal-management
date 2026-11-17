@@ -1,120 +1,197 @@
 import json
 from pathlib import Path
-import streamlit as st
+import numpy as np
 import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import streamlit as st
 
 BASE=Path(__file__).parent
-def load_json(name):
-    return json.loads((BASE/"data"/name).read_text(encoding="utf-8"))
+def loadj(n): return json.loads((BASE/"data"/n).read_text(encoding="utf-8"))
+topo=loadj("target_baseline.json"); pcm=loadj("wt_cpcm_reference.json")
+cell=loadj("lf280k_reference.json"); sources=loadj("data_sources.json")
+coords=pd.read_csv(BASE/"data"/"Stage15_v4_7_1_144电芯整数CAD坐标映射.csv")
+pcmgeo=pd.read_csv(BASE/"data"/"Stage15_v4_7_1_24个侧面PCM区域几何参数.csv")
+FAN={
+ "model":"ebm-papst W3G500-KK07-G2 (EC axial, 500 mm)",
+ "flow_m3h":4110.0,"pressure_Pa":82.0,"power_W":230.0,
+ "nominal_power_W":250.0,"rpm":970.0,"voltage_V":230.0,
+ "url":"https://www.ebmpapst.com/us/en/products/axial-fans/p/W3G500KK07G2.html"
+}
+st.set_page_config(page_title="280Ah电池柜热管理数字孪生",page_icon="🔋",layout="wide")
+st.markdown("""<style>
+.block-container{max-width:1550px;padding-top:1.2rem;padding-bottom:2rem}
+.hero{padding:24px 28px;border-radius:16px;background:linear-gradient(115deg,#10263b,#153a37 60%,#263a32);border:1px solid #31566b}
+.hero h1{color:#f5f8fb;margin:0;font-size:2rem}.hero p{color:#b7c9d8;margin:7px 0 0}
+[data-testid="stMetric"]{background:#142331;padding:13px 16px;border:1px solid #2d4354;border-radius:12px}
+.note{color:#9fb1c2;font-size:.88rem}
+</style>""",unsafe_allow_html=True)
+st.markdown('<div class="hero"><h1>🔋 280Ah 磷酸铁锂电池柜智能热管理数字孪生平台</h1><p>电芯热源估算 · WT-CPCM储热 · 空冷风机调速 · 有风/无风对比</p></div>',unsafe_allow_html=True)
+st.warning("工程估算版本 v3.0：当前运行的是可调参数的集中参数热模型，不是已验证的192状态真实柜体预测。所有结果均受候选电芯、等效热阻、换热效率及PCM未知物性影响。页面将明确标注估算假设，不作为安全认证或设备选型定案。")
 
-topo=load_json("target_baseline.json")
-pcm=load_json("wt_cpcm_reference.json")
-cell=load_json("lf280k_reference.json")
-sources=load_json("data_sources.json")
+# core input sidebar
+st.sidebar.header("运行工况与参数")
+ambient=st.sidebar.slider("环境温度（℃）", -10, 50, 30, 1)
+t0=st.sidebar.slider("电池初始温度（℃）", 10, 60, 30, 1)
+rate=st.sidebar.slider("放电倍率（C）",0.2,2.0,1.0,0.1)
+hours=st.sidebar.slider("仿真时长（h）",1,12,6,1)
+r_mohm=st.sidebar.number_input("单体等效内阻（mΩ，暂定）",0.05,2.0,0.25,0.05)
+cell_mass=st.sidebar.number_input("单体质量（kg，候选参考）",1.0,15.0,5.49,0.1)
+cp_cell=st.sidebar.number_input("单体比热（J/(kg·K)，暂定）",500,2000,1000,50)
+num_fans=st.sidebar.slider("风机数量",1,8,4,1)
+speed_pct=st.sidebar.slider("风机转速比例（%）",20,100,70,5)
+bypass=st.sidebar.slider("有效风量利用率（%）",1,30,8,1)
+pcm_density=st.sidebar.number_input("PCM密度（kg/m³，假设值）",400,1600,900,25)
+cp_pcm=st.sidebar.number_input("PCM显热比热（J/(kg·K)，假设值）",500,3000,1500,50)
+pcm_volume=float(pcmgeo["Allocated_PCM_Volume_m3"].sum())
+pcm_mass=pcm_volume*pcm_density
+pcm_contact=st.sidebar.slider("电芯至PCM等效耦合比例（%）",1,80,20,1)/100
+st.sidebar.caption("带“假设/暂定”的参数可按后续实测或厂家资料替换。")
 
-st.set_page_config(page_title="280Ah电池柜智能热管理模型",page_icon="🔋",layout="wide")
-st.title("🔋 280Ah 磷酸铁锂电池柜智能热管理模型")
-st.caption("公开演示平台 · 几何基线、文献参数、数据来源与模型验证状态")
-st.info("重要说明：当前网站展示的是研究模型的数据基线与公开资料，不代表已经完成目标电池柜的真实温度预测。由于目标电芯物性、PCM密度/显热比热、界面热导和风机曲线尚未全部闭合，真实工况求解入口暂未开放。")
-
-c1,c2,c3,c4=st.columns(4)
-c1.metric("目标电芯数量",topo["cell_count"])
-c2.metric("PCM区域",topo["pcm_regions"])
-c3.metric("ODE状态目标",topo["ode_states"])
-c4.metric("STEP实体数",topo["solid_count"])
-
-tabs=st.tabs(["模型总览","几何与结构","WT-CPCM材料","280Ah电芯数据","数据来源","模型运行条件"])
+# fan affinity laws
+n=speed_pct/100
+q_one=FAN["flow_m3h"]*n
+q_total=q_one*num_fans
+p_total=FAN["power_W"]*num_fans*n**3
+rho_air=1.2; cp_air=1005
+mdot=rho_air*q_total/3600
+# rectangular cabin frontal section; approximate mean bulk velocity
+area=2.6*2.438
+v_air=(q_total/3600)/area
+# simplified heat source, Joule heat only; reversible/entropic heat excluded
+I=280*rate
+Q_cell=I**2*(r_mohm/1000)
+Q_total=144*Q_cell
+C_b=144*cell_mass*cp_cell
+C_pcm=pcm_mass*cp_pcm
+# PCM staged enthalpy curve. Sensible cp assumed; paper's enthalpies represented as heating-only apparent Cp over reported ranges.
+ranges=pcm["stage_temperature_ranges_C"]; enthalpies=pcm["stage_enthalpy_J_kg"]
+def pcm_h(T):
+    T=np.asarray(T,dtype=float)
+    h=cp_pcm*(T-ambient)
+    for (lo,hi),latent in zip(ranges,enthalpies):
+        h += latent*np.clip((T-lo)/(hi-lo),0,1)
+    return h
+# invert specific enthalpy with monotone table
+Tgrid=np.linspace(-10,160,3401); Hgrid=pcm_h(Tgrid)
+def pcm_temp(H):
+    return np.interp(H,Hgrid,Tgrid)
+# use natural convection conductance and fan-enhanced air conductance, bypass factor exposed
+G_nat=28.0
+G_fan=mdot*cp_air*(bypass/100)
+G_air=G_nat+G_fan
+# thermal conductance cell-to-PCM and PCM-to-air
+G_bp=max(5.0,pcm_contact*pcmgeo["Cell_PCM_Direct_Contact_Area_m2"].sum()*120.0)
+G_pa=max(2.0,mdot*cp_air*0.025 + 8.0)
+dt=30.0; times=np.arange(0,hours*3600+dt,dt)
+def simulate(fan_on):
+    Tb=np.zeros(len(times)); Tp=np.zeros(len(times)); H=np.zeros(len(times)); stored=np.zeros(len(times))
+    Tb[0]=t0; Tp[0]=ambient; H[0]=pcm_mass*float(pcm_h(ambient))
+    for k in range(1,len(times)):
+        ta=ambient; tb=Tb[k-1]; tp=Tp[k-1]
+        qfan=(G_air*(tb-ta)) if fan_on else G_nat*(tb-ta)
+        qbp=G_bp*(tb-tp)
+        qpa=(G_pa*(tp-ta)) if fan_on else 8.0*(tp-ta)
+        dTb=(Q_total-qfan-qbp)/max(C_b,1)
+        dH=qbp-qpa
+        Tb[k]=tb+dTb*dt
+        H[k]=H[k-1]+dH*dt
+        Tp[k]=float(pcm_temp(H[k]/max(pcm_mass,1e-6)))
+        stored[k]=max(0.0,H[k]-H[0])
+    return pd.DataFrame({"time_h":times/3600,"battery_C":Tb,"pcm_C":Tp,"pcm_stored_MJ":stored/1e6})
+no=simulate(False); yes=simulate(True)
+# Display tabs
+tabs=st.tabs(["运行控制台","有风/无风温度对比","PCM储热状态","风机功率与风速","三维结构","模型依据与限制"])
 with tabs[0]:
-    st.subheader("模型架构")
-    left,right=st.columns(2)
-    with left:
-        st.markdown("""
-        **电池温度预测子模型**
-        - 144个电芯热节点
-        - 电芯间空气间隙与包间空气间隙
-        - 电芯—PCM接触候选热路径
-        - 真实热源与空气边界接入后求解
-        """)
-        st.markdown("""
-        **PCM储热状态子模型**
-        - 24个PCM区域
-        - WT-CPCM分阶段焓参考数据
-        - 每区保留历史最高温度状态
-        - 论文未给出的物性不自动补造
-        """)
-    with right:
-        st.markdown("""
-        **MPC控制目标**
-        - 电芯最高温度约束
-        - 电芯间温差约束
-        - 风机功耗与风量约束
-        - 温控效果与能耗多目标权衡
-        """)
-        st.warning("MPC闭环尚未接入经过验证的192状态真实参数求解器。")
-    st.subheader("研究流程")
-    st.code("工况输入 → 144芯温度预测 + 24区PCM焓状态预测 → MPC风机控制 → 温度/温差/能耗评价",language="text")
+    st.subheader("当前工况")
+    a,b,c,d=st.columns(4)
+    a.metric("总焦耳热源",f"{Q_total/1000:.2f} kW")
+    b.metric("电池等效热容",f"{C_b/1000:.1f} kJ/K")
+    c.metric("PCM估算质量",f"{pcm_mass:.1f} kg")
+    d.metric("风机总输入功率",f"{p_total:.0f} W")
+    st.markdown("#### 当前控制设定")
+    st.write(f"环境 {ambient}℃ · 初始电池 {t0}℃ · {rate:.1f}C · {hours}h · 风机 {num_fans}台、转速 {speed_pct}%")
+    st.write(f"估算总风量 {q_total:,.0f} m³/h · 舱体截面平均风速约 {v_air:.2f} m/s · 估算PCM质量 {pcm_mass:.1f} kg")
+    st.info("热源目前只计算 I²R 焦耳热，未计入可逆熵热、母排/连接件发热、柜体热容及空间温度不均匀。")
+    st.subheader("模型输出摘要（集中参数估算）")
+    a,b,c=st.columns(3)
+    a.metric("无风机末端电池温度",f"{no.battery_C.iloc[-1]:.1f} ℃")
+    b.metric("有风机末端电池温度",f"{yes.battery_C.iloc[-1]:.1f} ℃")
+    c.metric("风机工况末端PCM温度",f"{yes.pcm_C.iloc[-1]:.1f} ℃")
+    st.caption("这些是当前假设参数下的计算值，不是CFD或实验实测结果。")
 with tabs[1]:
-    st.subheader("当前采用的几何基线")
-    dims=[
-        ("电池舱（长×宽×高）","8200 × 2600 × 2438 mm"),
-        ("电池柜（长×宽×高）","1410 × 675 × 1987 mm"),
-        ("电芯（长×宽×高）","295 × 248 × 104 mm"),
-        ("电芯间距","7 mm"),
-        ("电池包间距","29 mm"),
-        ("电池包至柜体侧壁间隙","72 mm"),
-        ("前后、顶部、底部间隙","各 29 mm"),
-        ("每个电池包外侧PCM厚度","7 mm"),
-        ("导流板","2400 × 2000 × 3 mm"),
-        ("导流板圆孔","直径20 mm，贯穿厚度3 mm"),
-    ]
-    st.table(pd.DataFrame(dims,columns=["参数","当前基线"]))
-    st.caption(f"STEP审计：{topo['solid_count']}个实体；包围盒约 {topo['cabinet_bbox_mm'][0]:.2f} × {topo['cabinet_bbox_mm'][1]:.2f} × {topo['cabinet_bbox_mm'][2]:.2f} mm。")
-    st.warning("舱体/间距数据采用用户最新确认值；STEP实体数量和包围盒来自已恢复CAD文件。具体装配方向和各PCM接触面仍以最终装配体映射为准。")
+    st.subheader("有风机 / 无风机电池温度变化对比")
+    fig=go.Figure()
+    fig.add_trace(go.Scatter(x=no.time_h,y=no.battery_C,name="无风机（自然对流）",line=dict(width=3)))
+    fig.add_trace(go.Scatter(x=yes.time_h,y=yes.battery_C,name=f"有风机（{num_fans}台，{speed_pct}%转速）",line=dict(width=3)))
+    fig.add_hline(y=55,line_dash="dash",annotation_text="55℃文献阶段边界（参考）")
+    fig.update_layout(height=470,xaxis_title="时间（h）",yaxis_title="电池平均温度（℃）",legend=dict(orientation="h"))
+    st.plotly_chart(fig,use_container_width=True)
+    delta=no.battery_C.iloc[-1]-yes.battery_C.iloc[-1]
+    st.metric("末端平均温度差（无风机－有风机）",f"{delta:.1f} ℃")
+    st.caption("模型假设：144芯同等发热、集中热容、统一环境温度；不解析柜内局部热点和风道分配。")
 with tabs[2]:
-    st.subheader("WT-CPCM文献参考参数")
-    st.write(pcm["source"])
-    st.write("DOI：",pcm["doi"])
-    a,b=st.columns(2)
-    a.metric("总吸热焓参考值",f"{pcm['total_endothermic_enthalpy_J_kg']/1000:.2f} kJ/kg")
-    a.metric("25℃导热系数",f"{pcm['thermal_conductivity_W_mK']['25C']:.2f} W/(m·K)")
-    b.metric("55℃导热系数",f"{pcm['thermal_conductivity_W_mK']['55C']:.2f} W/(m·K)")
-    stage=pd.DataFrame([
-        {"阶段":"I","温区":f"{pcm['stage_temperature_ranges_C'][0][0]}–{pcm['stage_temperature_ranges_C'][0][1]}℃","吸热焓":f"{pcm['stage_enthalpy_J_kg'][0]/1000:.2f} kJ/kg"},
-        {"阶段":"II","温区":f"{pcm['stage_temperature_ranges_C'][1][0]}–{pcm['stage_temperature_ranges_C'][1][1]}℃","吸热焓":f"{pcm['stage_enthalpy_J_kg'][1]/1000:.2f} kJ/kg"},
-        {"阶段":"III","温区":f"{pcm['stage_temperature_ranges_C'][2][0]}–{pcm['stage_temperature_ranges_C'][2][1]}℃","吸热焓":f"{pcm['stage_enthalpy_J_kg'][2]/1000:.2f} kJ/kg"},
-    ])
-    st.dataframe(stage,use_container_width=True,hide_index=True)
-    st.write("文献配方质量分数（%）")
-    st.dataframe(pd.DataFrame([pcm["composition_wt_percent"]]),use_container_width=True,hide_index=True)
-    st.error("文献未提供当前样品批次可直接确认的密度、显热比热及II/III阶段动力学参数。公开页面将其标为待补证据，不据此伪造PCM温度曲线。")
+    st.subheader("PCM储热状态")
+    fig=go.Figure()
+    fig.add_trace(go.Scatter(x=yes.time_h,y=yes.pcm_C,name="有风机：PCM温度"))
+    fig.add_trace(go.Scatter(x=no.time_h,y=no.pcm_C,name="无风机：PCM温度"))
+    fig.update_layout(height=400,xaxis_title="时间（h）",yaxis_title="PCM等效温度（℃）")
+    st.plotly_chart(fig,use_container_width=True)
+    fig2=go.Figure()
+    fig2.add_trace(go.Scatter(x=yes.time_h,y=yes.pcm_stored_MJ,name="有风机：PCM净储热"))
+    fig2.add_trace(go.Scatter(x=no.time_h,y=no.pcm_stored_MJ,name="无风机：PCM净储热"))
+    fig2.update_layout(height=400,xaxis_title="时间（h）",yaxis_title="相对初始状态的净储热（MJ）")
+    st.plotly_chart(fig2,use_container_width=True)
+    st.metric("风机工况PCM净储热",f"{yes.pcm_stored_MJ.iloc[-1]:.2f} MJ")
+    st.caption("采用论文三阶段吸热焓构造升温焓曲线；阶段II/III按温区线性分配仅为数值近似，不代表反应动力学或冷却可逆性已验证。")
 with tabs[3]:
-    st.subheader("280Ah电芯公开参考数据")
-    st.write("候选规格：",cell["selected_reference"])
-    st.metric("标称容量",f"{cell['capacity_Ah']} Ah")
-    st.metric("标称电压",f"{cell['nominal_voltage_V']} V")
-    st.write("候选质量：",f"{cell['weight_kg_nominal']} ± {cell['weight_kg_tolerance']} kg")
-    st.write("候选尺寸：",cell["dimensions_mm"])
-    st.write("候选比热范围：",cell["specific_heat_J_kgK"],"J/(kg·K)")
-    st.write("候选导热系数：",cell["thermal_conductivity_W_mK"])
-    st.error("LF280K只是公开候选型号，尚未确认与你的放大CAD单体对应。其质量、密度、比热不能直接套到295×248×104 mm的CAD单体。")
+    st.subheader("风机选型参考与调速")
+    st.markdown(f"**候选参考：[{FAN['model']}]({FAN['url']})**")
+    st.write("厂家公开工作点：500 mm，4110 m³/h，82 Pa，约230 W，970 rpm；额定最大输入功率约250 W。")
+    st.dataframe(pd.DataFrame([
+      ["单台额定参考风量",f"{FAN['flow_m3h']:,.0f} m³/h"],
+      ["单台参考静压",f"{FAN['pressure_Pa']:.0f} Pa"],
+      ["单台参考输入功率",f"{FAN['power_W']:.0f} W"],
+      ["数量",f"{num_fans} 台"],
+      ["当前转速比例",f"{speed_pct}%"],
+      ["当前总风量（相似定律估算）",f"{q_total:,.0f} m³/h"],
+      ["当前总功率（立方定律估算）",f"{p_total:,.0f} W"],
+      ["舱体截面平均风速",f"{v_air:.2f} m/s"],
+    ],columns=["指标","估算值"]),use_container_width=True,hide_index=True)
+    st.info("风机相似定律：风量约与转速成正比、压力约与转速平方成正比、功率约与转速立方成正比。实际工作点还受系统阻力曲线、安装方式、过滤网和导流板影响。")
+    st.caption("此型号厂家注明主要用于工业蒸发器；在本项目中仅作公开性能参考候选，必须由系统阻力计算与厂家复核后才能定型。")
 with tabs[4]:
-    st.subheader("数据集与文献")
-    for s in sources:
-        st.markdown(f"**{s['name']}**  \n{s['url']}  \n用途：{s['role']}  \n适用性：{s['priority']}；本地已恢复：{'是' if s.get('present_locally') else '否'}")
-        st.divider()
+    st.subheader("144芯CAD坐标点位浏览")
+    packs=["全部"]+sorted(coords.Pack_ID.unique().tolist())
+    pick=st.selectbox("电池包筛选",packs)
+    view=coords if pick=="全部" else coords[coords.Pack_ID==pick]
+    fig=px.scatter_3d(view,x="CAD_X_center_mm_rounded",y="CAD_Y_center_mm_rounded",z="CAD_Z_center_mm_rounded",
+        color="Pack_ID",symbol="Parallel_Branch",hover_name="Cell_ID",
+        hover_data=["Series_Group","Parallel_Branch","CAD_X_center_mm_rounded","CAD_Y_center_mm_rounded","CAD_Z_center_mm_rounded"])
+    fig.update_traces(marker=dict(size=4))
+    fig.update_layout(height=600,margin=dict(l=0,r=0,t=20,b=0),scene=dict(aspectmode="data"))
+    st.plotly_chart(fig,use_container_width=True)
+    st.warning("该图是CAD坐标点位可视化，不是STEP实体级三维渲染；A/B与SG方向仍需原生SolidWorks核对。")
+    st.dataframe(pd.DataFrame([
+      ["电池舱","8200×2600×2438 mm"],["电池柜","1410×675×1987 mm"],
+      ["电芯","295×248×104 mm"],["电芯间距","7 mm"],["电池包间距","29 mm"],
+      ["包至柜体侧壁","72 mm"],["前后/顶部/底部间隙","29 mm"],["PCM厚度","7 mm"]
+    ],columns=["参数","基线"]),use_container_width=True,hide_index=True)
 with tabs[5]:
-    st.subheader("公开演示输入面板")
-    st.write("以下设置用于定义后续真实求解工况。当前真实求解被物理参数门禁锁定。")
-    col1,col2=st.columns(2)
-    with col1:
-        ambient=st.number_input("环境温度（℃）",value=30.0,step=1.0)
-        rate=st.number_input("放电倍率（C）",value=1.0,min_value=0.0,step=0.1)
-    with col2:
-        fan=st.selectbox("初始风机状态",["关闭","开启"])
-        strategy=st.selectbox("控制策略",["MPC预测控制","固定风量基准","自然冷却对照"])
-    st.write({"环境温度_C":ambient,"放电倍率_C":rate,"初始风机":fan,"控制策略":strategy})
-    st.button("运行真实模型",disabled=True,help="待目标电芯热容、PCM密度/比热、界面热导及风机曲线审核通过后开放。")
-    st.warning("当前状态：真实模型运行入口锁定。不会显示虚构的最高温度、最大温差或节能率。")
-
+    st.subheader("模型参数来源与适用性")
+    st.markdown(f"- WT-CPCM论文：DOI `{pcm['doi']}`；总吸热焓 {pcm['total_endothermic_enthalpy_J_kg']/1000:.2f} kJ/kg。")
+    st.markdown(f"- 风机公开资料：[ebm-papst W3G500-KK07-G2]({FAN['url']})。")
+    st.markdown(f"- 候选电芯：{cell['selected_reference']}；容量{cell['capacity_Ah']}Ah，尺寸与本项目CAD尺寸不一致。")
+    st.markdown(f"- 由CAD区域文件求得PCM几何总体积约 **{pcm_volume:.5f} m³**；密度为用户可调假设，因此质量随假设变化。")
+    st.dataframe(pd.DataFrame([
+      ["144芯热源","I²R焦耳热估算","未含熵热，内阻待实测/文献匹配"],
+      ["单体质量/比热","LF280K候选/可调值","目标电芯型号未确认"],
+      ["PCM密度/比热","可调假设值","论文未提供完整数据"],
+      ["PCM阶段焓","王佳论文三阶段吸热焓","高温阶段动力学及可逆性未验证"],
+      ["风机性能","厂家公开工作点+相似定律","系统阻力/安装工作点待校核"],
+      ["风道流速","总风量/舱体截面","截面平均速度，不是局部风速"],
+      ["温度场","集中参数平均温度","非CFD，不解析局部热点"],
+    ],columns=["项目","采用方法","限制"]),use_container_width=True,hide_index=True)
+    st.warning("本网站用于方案估算、参数敏感性分析和控制策略演示。不能用于热失控安全认证、实际风机采购定型或替代CFD/实验验证。")
 st.divider()
-st.caption("版本：公开资料与几何基线展示版。模型结果须经目标参数辨识及独立实验验证后方可用于工程结论。")
+st.caption("版本 v3.0 · 有风/无风对比、PCM储热状态及风机调速估算已接入；真实192状态多节点预测与MPC闭环仍待参数校准。")
