@@ -1,0 +1,34 @@
+{
+  "selected_reference": "EVE LF280K version C, NOT model-matched to enlarged CAD",
+  "source_url": "https://www.mivvyenergy.cz/img/cms/Datasheet%20280Ah.pdf",
+  "capacity_Ah": 280,
+  "nominal_voltage_V": 3.2,
+  "weight_kg_nominal": 5.49,
+  "weight_kg_tolerance": 0.3,
+  "dimensions_mm": {
+    "length": 173.7,
+    "thickness": 71.7,
+    "height_including_terminal": 207.2
+  },
+  "thermal_conductivity_W_mK": {
+    "X_or_Z": [
+      11,
+      13
+    ],
+    "Y": [
+      2,
+      3
+    ]
+  },
+  "specific_heat_J_kgK": [
+    900,
+    1100
+  ],
+  "target_cad_dimensions_mm": [
+    104,
+    295,
+    248
+  ],
+  "status": "LITERATURE_CANDIDATE_ONLY_NOT_CONFIRMED_REAL_CELL",
+  "warning": "LF280K density/mass and heat capacity must not be paired with 1.44x scaled target cell volume."
+}

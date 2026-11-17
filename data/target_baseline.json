@@ -1,0 +1,23 @@
+{
+  "baseline_version": "User confirmed geometry 2026-11-17; CAD Stage15 v4.7.1",
+  "solid_count": 151,
+  "cabinet_bbox_mm": [
+    1409.76,
+    1987.2,
+    675.36
+  ],
+  "cell_count": 144,
+  "pcm_regions": 24,
+  "thermal_nodes": 168,
+  "pcm_tmax_history_states": 24,
+  "ode_states": 192,
+  "cell_pcm_contact_candidates": 168,
+  "cell_cell_air_gap_candidates": 204,
+  "inter_pack_air_gaps": 5,
+  "cell_cad_dims_integer_mm": [
+    104,
+    295,
+    248
+  ],
+  "pcm_nominal_thickness_mm": 7
+}

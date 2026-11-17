@@ -1,0 +1,42 @@
+[
+  {
+    "name": "Bath LIC 280Ah characterisation",
+    "url": "https://zenodo.org/records/20813753",
+    "present_locally": true,
+    "files": "capacity_hppc_entropy.zip",
+    "role": "280Ah cell electrical, SOC-dependent R0/R1/C1, entropy and temperature; no cabinet CFD",
+    "priority": "high"
+  },
+  {
+    "name": "PCM-air coupled 52Ah Fluent 16-cell module",
+    "url": "https://zenodo.org/records/22959771",
+    "present_locally": true,
+    "files": "Simulation-data.xlsx",
+    "role": "PCM-air design/control baseline, 11 worksheets; not 280Ah heat model or current WT-CPCM properties",
+    "priority": "medium"
+  },
+  {
+    "name": "SIT CATL/EVE 280Ah cycling",
+    "url": "https://zenodo.org/records/14576042",
+    "present_locally": false,
+    "files": "temperature/current/voltage cycling data",
+    "role": "supplemental 280Ah dynamic temperature sequences; different form factor/setup",
+    "priority": "medium"
+  },
+  {
+    "name": "280Ah large-capacity electrothermal experiment",
+    "url": "https://www.sciencedirect.com/science/article/pii/S2352152X24002044",
+    "present_locally": false,
+    "files": "paper thermal conductivity and cp",
+    "role": "280Ah alternative measured property sensitivity range; experimental sample identity not necessarily match target",
+    "priority": "medium"
+  },
+  {
+    "name": "EVE LF280K specification C",
+    "url": "https://www.mivvyenergy.cz/img/cms/Datasheet%20280Ah.pdf",
+    "present_locally": false,
+    "files": "PDF datasheet",
+    "role": "commercial 280Ah cell heat capacity conductivity mass and dimensions; geometry mismatch",
+    "priority": "high"
+  }
+]

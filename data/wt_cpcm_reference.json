@@ -1,0 +1,44 @@
+{
+  "source": "Wang Jia et al., 宽温域相变功能材料阻隔电池热失控传播性能研究, CIESC Journal 2026",
+  "doi": "10.11949/0438-1157.20260043",
+  "type": "WT-CPCM SAT/PEG2000/DSP/EG/EP",
+  "composition_wt_percent": {
+    "SAT": 40.29,
+    "PEG2000": 37.0,
+    "DSP": 3.35,
+    "EG": 2.69,
+    "EP": 16.67
+  },
+  "stage_enthalpy_J_kg": [
+    58730,
+    104950,
+    338560
+  ],
+  "stage_temperature_ranges_C": [
+    [
+      35,
+      55
+    ],
+    [
+      55,
+      70
+    ],
+    [
+      70,
+      150
+    ]
+  ],
+  "total_endothermic_enthalpy_J_kg": 502240,
+  "thermal_conductivity_W_mK": {
+    "25C": 1.24,
+    "55C": 1.42
+  },
+  "unknown": {
+    "density_kg_m3": null,
+    "sensible_heat_capacity_J_kgK": null,
+    "stage_II_III_kinetics": null,
+    "actual_pcm_fill_volume_m3": null
+  },
+  "provenance": "paper composition Table1 p7, DSC p6, thermal conductivity Fig5 p8",
+  "reuse_warning": "Reference material property only. Cannot assert sample batch equivalence or reversible Stage II/III reaction kinetics."
+}
