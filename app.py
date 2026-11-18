@@ -41,6 +41,7 @@ st.caption("设备参数已按本轮提供的规格表接入；对照组保持�
 
 with st.sidebar:
     st.markdown("## ⚙️ 工况输入")
+    st.caption("启动阶段：舱级风机与空调默认关闭，达到温度阈值后分级启动。")
     ambient=st.slider("环境温度（℃）",-10,50,30)
     initial=st.slider("初始电池温度（℃）",10,55,30)
     rate=st.slider("放电倍率（C）",.2,2.,1.,.1)
@@ -57,10 +58,8 @@ with st.sidebar:
     small_type=st.selectbox("模组级DC风扇",["不配置",*SMALL.keys()],index=1)
     nsmall=st.number_input("小型DC风扇数量",0,144,24)
     st.markdown("---")
-    st.markdown("## 🧰 对照组固定设定")
-    base_fan=st.slider("对照组风机转速（%）",0,100,60,5)
-    base_ac=st.slider("对照组空调输出（%）",0,100,40,5)
-    base_vent=st.slider("对照组风阀开度（%）",25,100,70,5)
+    st.markdown("## 🧰 对照组控制")
+    st.caption("采用固定温度阈值启停：低温停机、32℃启动风机、35℃启动空调、38℃强化制冷。实验组采用预测调控。")
     fire=st.toggle("消防信号触发（25% LEL）",False)
     fan_fault=st.toggle("主风机故障信号",False)
     compressor_overload=st.toggle("空调压缩机过载",False)
@@ -115,20 +114,44 @@ def equipment(fan_cmd,ac_cmd,vent_cmd,small_cmd=0):
 def pcm_cp(T):
     return PCM["cp"]+PCM["latent"]/(PCM["phase_hi"]-PCM["phase_lo"]) if PCM["phase_lo"]<=T<=PCM["phase_hi"] else PCM["cp"]
 def step_state(oldb,oldp,fan_cmd,ac_cmd,vent_cmd):
-    eq=equipment(fan_cmd,ac_cmd,vent_cmd,1.0 if small_type!="不配置" else 0.0)
-    # Air-side exchange scales with actual fan flow and valve opening; HVAC cools return-air zone.
+    eq=equipment(fan_cmd,ac_cmd,vent_cmd,1.0 if (fan_cmd>0 and small_type!="不配置") else 0.0)
+
+    # 电池向环境空气的自然/强制对流：空气温度以环境温度为基准，
+    # 无空调时不会把电池冷却到环境温度以下。
     air_gain=np.clip(eq["q"]/max(nfan*fan["rated_flow"],1)*12.,0,18.)
-    q_ba=(.35+air_gain)*(0.55+0.45*vent_cmd/100)*air_factor*(oldb-ambient)
+    h_air=(.35+air_gain)*(0.55+0.45*vent_cmd/100)*air_factor
+    q_air=h_air*(oldb-ambient)
+
+    # 电池—PCM导热及热区之间的横向热扩散
     q_bp=G_cell_pcm*(oldb-oldp)
-    mix=np.zeros(nz); mix[1:]+=G_inter*(oldb[:-1]-oldb[1:]); mix[:-1]+=G_inter*(oldb[1:]-oldb[:-1])
-    q_ac=eq["cooling_kw"]*1000
-    weights=np.maximum(oldb-ambient,0)+.15; weights=weights/weights.sum()
-    q_ba+=q_ac*weights
+    mix=np.zeros(nz)
+    mix[1:]+=G_inter*(oldb[:-1]-oldb[1:])
+    mix[:-1]+=G_inter*(oldb[1:]-oldb[:-1])
+
+    # 空调冷量仅在达到制冷触发温度后由空气侧UA传递，不能直接作用于电芯。
+    ac_trigger=35.0
+    cooling_target=32.0
+    excess=np.maximum(oldb-cooling_target,0.0)
+    ua_ac=220.0
+    q_ac_total=min(eq["cooling_kw"]*1000.0,ua_ac*float(excess.mean()))
+    weights=excess/excess.sum() if excess.sum()>1e-9 else np.zeros(nz)
+    q_ac_zone=q_ac_total*weights
+    q_ac_zone=np.minimum(q_ac_zone,Cb*np.maximum(oldb-cooling_target,0.0)/dt)
+
+    # 只有空调开启且电池高于目标温度时才提供主动冷却。
+    q_ba=q_air+q_ac_zone
+
+    # PCM与舱内空气换热，热流方向由温差自然决定
     Gpa=1.+16.*(eq["q"]/max(nfan*fan["rated_flow"],1))*(.55+.45*vent_cmd/100)
     q_pa=Gpa*air_factor*(oldp-ambient)
+
     dTb=(qzone-q_ba-q_bp+mix)/Cb
     dTp=(q_bp-q_pa)/(mpz*pcm_cp(float(oldp.mean())))
-    return oldb+dTb*dt,oldp+dTp*dt,eq
+    next_b=oldb+dTb*dt
+    next_p=oldp+dTp*dt
+
+    # 物理温度下限只作数值保护；正常运行不应触发。
+    return np.maximum(next_b,0.0),np.maximum(next_p,0.0),eq
 
 def energy_step(eq):
     return eq["total_w"]*dt/3.6e6
@@ -139,55 +162,88 @@ def threshold_guard(action,oldb,return_temp):
     f,a,v=action; alarms=[]
     spread=float(oldb.max()-oldb.min())
     if fire:
-        alarms.append("消防联锁：空调关闭、风阀关闭、风机停机")
+        alarms.append("消防联锁：空调关闭、风阀关闭，风机停机")
         return (0.,0.,0.),alarms
-    if return_temp>32:
-        f=max(f,.0) if fan_fault else 1.; a=1.; alarms.append("回风温度>32℃：风机100%、空调全功率")
-    elif return_temp>28:
-        f=max(f,.5); a=max(a,.35); alarms.append("回风温度>28℃：空调制冷、风机至少50%")
-    if spread>5:
-        v=min(100,v+20); f=min(1.,f+.2); alarms.append("模组温差>5℃：风阀开度+20%、风机提速")
+
+    # 分阶段温控 + 回差：避免初始就运行以及阈值附近频繁启停
+    # 低于32℃：舱级风机、空调保持关闭；32℃启动风机；35℃启动空调。
+    if return_temp < 32.0:
+        f,a=0.0,0.0
+    elif return_temp < 35.0:
+        f=max(f,0.5); a=0.0
+    elif return_temp < 38.0:
+        f=max(f,0.5); a=max(a,0.25)
+    else:
+        f=1.0; a=1.0
+        alarms.append("电池温度达到38℃：风机与空调进入强化制冷")
+
+    if spread>3.0:
+        f=max(f,.5)
+        v=min(100.0,max(v,50.0)+20.0)
+        alarms.append("电池温差超过3℃：加强分区风量均衡")
     if compressor_overload and a>0:
-        if hvac["type"]=="variable":
-            a=min(a,0.0 if 30<=30 else .0) # 30Hz minimum-frequency fallback
-            a=.01
-        else:
-            a=min(a,.5)
-        alarms.append("空调压缩机过载：降载运行并报警")
-    if fan_fault:
-        f=min(f,.5); alarms.append("主风机故障：切换备用风机策略并报警（备用容量待补充）")
+        if hvac["type"]=="variable": a=min(a,0.01)
+        else: a=min(a,.5)
+        alarms.append("空调压缩机过载：降载并报警")
+    if fan_fault and f>0:
+        f=0.0
+        alarms.append("主风机故障：报警，备用风机容量待确认")
     return (f,a,v),alarms
 
 def mpc_action(oldb,oldp):
-    # Receding-horizon surrogate MPC. Equipment power is computed from supplied ratings and fan affinity laws.
+    tmean=float(oldb.mean())
+    spread=float(oldb.max()-oldb.min())
+    # 设备启动门槛：初期完全停机，温度升高后分级投入。
+    if tmean < 32.0 and spread <= 3.0:
+        return (0.0,0.0,50.0)
+    fan_candidates=(.5,.75,1.0) if tmean>=32.0 else (0.0,)
+    ac_candidates=(0.0,.25,.5,.75,1.0) if tmean>=35.0 else (0.0,)
+    vent_candidates=(50.0,75.0,100.0) if tmean>=32.0 or spread>3.0 else (50.0,)
     candidates=[]
-    for f in (.25,.5,.75,1.):
-        for a in (0.,.25,.5,.75,1.):
-            for v in (25.,50.,75.,100.):
-                pb=oldb.copy(); pp=oldp.copy(); e=0.
+    for f in fan_candidates:
+        for a in ac_candidates:
+            for v in vent_candidates:
+                pb=oldb.copy(); pp=oldp.copy(); e=0.0
                 for _ in range(4):
                     pb,pp,eq=step_state(pb,pp,f,a,v)
                     e+=energy_step(eq)
-                spread=pb.max()-pb.min(); tmax=pb.max()
-                penalty=0.
-                if spread>target: penalty+=250000*(spread-target)**2
-                if tmax>ambient+18: penalty+=50000*(tmax-(ambient+18))**2
-                score=penalty+9000*tmax+70000*spread+.25*e
+                pmax=float(pb.max()); pmean=float(pb.mean())
+                dmax=float(pb.max()-pb.min())
+                # 目标温度带30–35℃，温差目标3℃；越界惩罚高于能耗项。
+                penalty=0.0
+                if pmax>35.0: penalty+=300000.0*(pmax-35.0)**2
+                if pmean<28.0: penalty+=300000.0*(28.0-pmean)**2
+                if dmax>3.0: penalty+=400000.0*(dmax-3.0)**2
+                score=penalty+2500.0*abs(pmean-32.0)+12000.0*dmax+0.5*e
                 candidates.append((score,f,a,v))
     _,f,a,v=min(candidates,key=lambda x:x[0])
     return f,a,v
 
 def simulate(mode):
-    Tb=np.ones((len(ts),nz))*initial; Tp=np.ones((len(ts),nz))*ambient
+    Tb=np.ones((len(ts),nz))*initial
+    Tp=np.ones((len(ts),nz))*ambient
     fc=np.zeros(len(ts)); ac=np.zeros(len(ts)); vc=np.zeros(len(ts))
     fanw=np.zeros(len(ts)); acw=np.zeros(len(ts)); smallw=np.zeros(len(ts)); actw=np.zeros(len(ts))
     airflow=np.zeros(len(ts)); pressure=np.zeros(len(ts)); velocity=np.zeros(len(ts)); cooling=np.zeros(len(ts))
     power=np.zeros(len(ts)); energy=np.zeros(len(ts)); alarms=[]
     update_every=max(1,int(300/dt))
-    last=(base_fan/100,base_ac/100,base_vent) if mode=="baseline" else (.25,0.,45.)
+    # 初始时风机、空调关闭；风阀维持基础开度，不产生主动制冷。
+    last=(0.0,0.0,50.0)
     for k in range(1,len(ts)):
         if (k-1)%update_every==0:
-            last=(base_fan/100,base_ac/100,base_vent) if mode=="baseline" else mpc_action(Tb[k-1],Tp[k-1])
+            if mode=="baseline":
+                tmean=float(Tb[k-1].mean())
+                # 对照组：传统固定阈值启停控制，启停门槛固定，不做预测优化。
+                if tmean < 32.0:
+                    last=(0.0,0.0,50.0)
+                elif tmean < 35.0:
+                    last=(0.5,0.0,50.0)
+                elif tmean < 38.0:
+                    last=(0.5,0.25,50.0)
+                else:
+                    last=(1.0,1.0,50.0)
+            else:
+                last=mpc_action(Tb[k-1],Tp[k-1])
         ret=float(Tb[k-1].mean())
         if mode=="mpc":
             last,al=threshold_guard(last,Tb[k-1],ret)
@@ -198,7 +254,6 @@ def simulate(mode):
         fanw[k],acw[k],smallw[k],actw[k]=eq["fan_w"],eq["ac_w"],eq["small_w"],eq["act_w"]
         airflow[k],pressure[k],velocity[k],cooling[k]=eq["q"],eq["dp"],eq["vel"],eq["cooling_kw"]
         power[k]=eq["total_w"]; energy[k]=energy[k-1]+energy_step(eq)
-    fc[0],ac[0],vc[0]=last
     return dict(Tb=Tb,Tp=Tp,fan=fc,ac=ac,vent=vc,fanw=fanw,acw=acw,smallw=smallw,actw=actw,
                 airflow=airflow,pressure=pressure,velocity=velocity,cooling=cooling,power=power,energy=energy,alarms=sorted(set(alarms)))
 
@@ -221,8 +276,8 @@ k4.metric("预测组风机累计运行",f"{mm['runtime']:.2f} h")
 tabs=st.tabs(["① 对照评价","② 温度与温差","③ PCM储热","④ 设备控制与能耗","⑤ 设备参数库","⑥ 三维电池结构"])
 with tabs[0]:
     c1,c2=st.columns(2)
-    with c1: st.markdown('<div class="card"><h3>方案1 · 固定控制对照组</h3><p>风机、空调和风阀维持用户设定的固定输出，不根据温度动态调整。</p></div>',unsafe_allow_html=True)
-    with c2: st.markdown('<div class="card"><h3>方案2 · 预测调控实验组</h3><p>每5分钟滚动预测热状态并优化设备控制量，同时执行温度阈值和消防/故障保护。</p></div>',unsafe_allow_html=True)
+    with c1: st.markdown('<div class="card"><h3>方案1 · 固定控制对照组</h3><p>风机与空调启动前保持关闭，达到预设温度阈值后按固定规则启停，不进行预测优化。</p></div>',unsafe_allow_html=True)
+    with c2: st.markdown('<div class="card"><h3>方案2 · 预测调控实验组</h3><p>初始风机与空调关闭；每5分钟滚动预测热状态，按30–35℃目标温度带优化风机、空调和风阀，并执行保护逻辑。</p></div>',unsafe_allow_html=True)
     rows=["电池最高温度 Tmax","电池组最大温差 ΔTmax","PCM液相率（末端）","PCM剩余储热能力（相对）","风机累计运行时间","系统总能耗","平均电池温度"]
     def fmt(m): return [f"{m['tmax']:.2f} ℃",f"{m['dmax']:.2f} ℃",f"{m['liquid']*100:.1f} %",f"{m['remaining']*100:.1f} %",f"{m['runtime']:.2f} h",f"{m['energy']:.2f} kWh",f"{m['avg']:.2f} ℃"]
     st.dataframe(pd.DataFrame({"评价指标":rows,"固定控制对照组":fmt(mb),"预测调控实验组":fmt(mm)}),use_container_width=True,hide_index=True)
