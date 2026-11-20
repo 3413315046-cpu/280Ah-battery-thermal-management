@@ -45,7 +45,7 @@ with st.sidebar:
     ambient=st.slider("环境温度（℃）",-10,50,30)
     initial=st.slider("初始电池温度（℃）",10,55,30)
     rate=st.slider("放电倍率（C）",.2,2.,1.,.1)
-    duration=st.slider("运行时长（h）",1,12,6)
+    duration=st.slider("运行时长（h）",1,48,6,1)
     r_mohm=st.number_input("单体等效内阻（mΩ，待校准）",.05,2.,.25,.05)
     cell_mass=st.number_input("单体质量（kg，暂定）",1.,15.,5.49,.1)
     cell_cp=st.number_input("单体比热（J/(kg·K)，暂定）",500,2000,1000,50)
