@@ -113,9 +113,10 @@ def _ac_power(s, fraction):
 def _control(mode, s, tmax, spread, pcm_liquid, slope, old_fan, old_ac,
              zone=None, hour=0.0, pcm_temp=None, dt_seconds=300):
     """
-    同硬件公平对照：
-    固定送风/固定阈值保持基准策略；双预测MPC在候选风机-风阀-空调组合中
-    做短时域滚动预测，优先选取满足温度与温差约束的最低瞬时功率组合。
+    三组公平对照控制。
+    双预测MPC：以20 min为基础预测时域，滚动评估未来20/40/60 min的热状态；
+    根据电池温度、温升趋势、温差、环境温度及PCM剩余潜热，在风机/风阀/空调
+    候选组合中选择满足热约束的最低功率组合。空调不是固定开启设备。
     """
     if mode == "固定送风":
         fan = _clip(s.fixed_speed)
@@ -131,62 +132,80 @@ def _control(mode, s, tmax, spread, pcm_liquid, slope, old_fan, old_ac,
         hot_idx = np.argsort(z)[-2:]
         mass = max(0.0, s.pcm_volume*s.pcm_density)
         pcm_temp = float(pcm_temp if pcm_temp is not None else s.ambient)
-        load = _heat_load(s, hour + max(1, s.prediction_minutes)/120.0)
-        heat_pattern = np.array([0.94,0.98,1.02,1.07,1.05,1.00,0.97,0.97])
-        cooling_pattern = np.array([1.10,1.06,1.02,0.96,0.92,0.94,0.99,1.01])
+        liquid = _clip(pcm_liquid)
+        load_now = _heat_load(s, hour)
         cap_kwh_k = max(0.5, s.pack_heat_capacity_kJ_K/3600.0)
         airflow_full = _fan_spec(s)["rated_airflow_m3h"]*max(1,s.fans)
         ac_capacity = _ac_spec(s)["cooling_capacity_kW"]
-        horizon_h = max(10.0, float(s.prediction_minutes)*60.0)/3600.0
-        passive = s.passive_loss_kW_K*(mean_t-s.ambient)
-        q_pcm = float(np.clip(0.10*(float(z[hot_idx].mean())-pcm_temp),-0.10,0.22))
-        if pcm_liquid >= 0.999 and q_pcm > 0: q_pcm *= 0.10
-        if pcm_liquid <= 0.001 and q_pcm < 0: q_pcm *= 0.10
-
-        best = None
-        # Discrete candidate set makes the MPC auditable and prevents arbitrary AC bias.
-        fan_candidates = (0.0,0.22,0.32,0.42,0.52,0.62,0.72,0.82,0.92)
-        ac_candidates = (0.0,0.04,0.08,0.12,0.18,0.25,0.35,0.50)
-        valve_candidates = (0.60,0.75,0.90,1.00)
+        heat_pattern = np.array([0.94,0.98,1.02,1.07,1.05,1.00,0.97,0.97])
+        cooling_pattern = np.array([1.10,1.06,1.02,0.96,0.92,0.94,0.99,1.01])
         dev = z-z.mean()
         allocation = np.clip(1.0+0.11*dev,0.78,1.22)
+        passive = s.passive_loss_kW_K*(mean_t-s.ambient)
+        q_pcm = float(np.clip(0.10*(float(z[hot_idx].mean())-pcm_temp),-0.10,0.22))
+        # PCM approaching full melt has little remaining latent buffer; avoid counting
+        # the same latent capacity repeatedly in the look-ahead prediction.
+        pcm_absorb = max(0.0, q_pcm) * (1.0 - 0.85*liquid)
+        if q_pcm < 0:
+            pcm_absorb = q_pcm * (0.15 + 0.35*liquid)
 
-        for f in fan_candidates:
-            fan_kw = _fan_power(s,f)
-            airflow = airflow_full*f
-            fan_cooling = min(airflow*0.00012*max(0.0,mean_t-s.ambient+1.0),
-                              1.00*load)
-            for acv in ac_candidates:
-                ac_kw = _ac_power(s,acv)
-                ac_cooling = ac_capacity*acv*0.82
-                for v in valve_candidates:
-                    cooling = (fan_cooling+ac_cooling)*cooling_pattern*allocation*v
-                    net = load*heat_pattern-cooling-passive/8.0
-                    weights = np.zeros(8); weights[hot_idx]=0.5
-                    net -= q_pcm*weights
-                    net += 0.18*(z.mean()-z)
-                    pred_zone = np.clip(z+net*horizon_h/cap_kwh_k,5.0,65.0)
-                    pred_max = float(pred_zone.max())
-                    pred_spread = float(pred_zone.max()-pred_zone.min())
+        # Use the user-selected prediction horizon (default 20 min), not an accidental
+        # 10-hour minimum. Evaluate multiple receding forecast points.
+        base_h = max(5.0, float(s.prediction_minutes)) / 60.0
+        horizons = (base_h, 2.0*base_h, 3.0*base_h)
+        target_soft = s.target_t - 0.35
+        spread_soft = s.target_spread - 0.10
 
-                    # Hard-ish thermal constraints, with a strong quadratic penalty
-                    # when the current physical conditions make them infeasible.
-                    t_violation = max(0.0,pred_max-(s.target_t-0.4))
-                    dt_violation = max(0.0,pred_spread-s.target_spread)
-                    power = fan_kw+ac_kw
-                    switching = 0.025*abs(f-old_fan)+0.035*abs(acv-old_ac)
-                    objective = (power + switching
-                                 + 18.0*t_violation**2
-                                 + 12.0*dt_violation**2)
-                    # Prefer fan/valve distribution over AC when costs are comparable.
-                    objective += 0.012*acv
-                    if best is None or objective < best[0]:
-                        best=(objective,f,acv,v,pred_max,pred_spread)
+        fan_candidates = np.array((0.0,0.16,0.24,0.32,0.42,0.52,0.64,0.76,0.88,1.0))
+        ac_candidates = np.array((0.0,0.04,0.08,0.12,0.18,0.25,0.35,0.50,0.70))
+        valve_candidates = np.array((0.55,0.70,0.85,1.0))
+        # Vectorized Cartesian product: same exhaustive candidate search, much faster.
+        F, A, V = np.meshgrid(fan_candidates, ac_candidates, valve_candidates, indexing="ij")
+        F, A, V = F.ravel(), A.ravel(), V.ravel()
+        fan_kw = s.fans*_fan_spec(s)["rated_power_W"]*F**3/1000.0
+        ac_kw = _ac_spec(s)["rated_power_kW"]*A**1.5
+        airflow = airflow_full*F
+        fan_cooling_now = np.minimum(
+            airflow*0.00012*max(0.0,mean_t-s.ambient+1.0), 1.00*load_now
+        )
+        ac_cooling = ac_capacity*A*0.82
+        dev = z-z.mean()
+        allocation = np.clip(1.0+0.11*dev,0.78,1.22)
+        weights = np.zeros(8); weights[hot_idx]=0.5
+        base_net_correction = -passive/8.0 - pcm_absorb*weights + 0.18*(z.mean()-z)
+        max_temp_penalty = np.zeros_like(F)
+        spread_penalty = np.zeros_like(F)
+        forecast_energy = np.zeros_like(F)
 
-        _,fan,ac,valve,_,_=best
-        # Limit abrupt actuator changes without forcing unnecessary AC run-on.
-        fan=float(np.clip(fan,old_fan-0.25,old_fan+0.25))
-        ac=float(np.clip(ac,old_ac-0.10,old_ac+0.10))
+        for h in horizons:
+            future_load = _heat_load(s, hour+h)
+            fan_cooling_future = np.minimum(
+                airflow*0.00012*max(0.0,mean_t-s.ambient+1.0), 1.00*future_load
+            )
+            total_cooling = fan_cooling_future + ac_cooling
+            cooling = total_cooling[:,None]*cooling_pattern[None,:]*allocation[None,:]*V[:,None]
+            net = future_load*heat_pattern[None,:] - cooling + base_net_correction[None,:]
+            pred = np.clip(z[None,:]+net*h/cap_kwh_k,5.0,65.0)
+            pmax = pred.max(axis=1)
+            pspread = pmax-pred.min(axis=1)
+            max_temp_penalty += np.maximum(0.0,pmax-target_soft)**2
+            spread_penalty += np.maximum(0.0,pspread-spread_soft)**2
+            forecast_energy += (fan_kw+ac_kw)*h/3.0
+
+        switching = 0.018*np.abs(F-old_fan)+0.028*np.abs(A-old_ac)
+        valve_switch = 0.006*np.abs(V-0.85)
+        pcm_depletion = 0.012*max(0.0,liquid-0.70)*max(0.0,mean_t-s.pcm_t_start)
+        objective = (fan_kw+ac_kw + 0.02*forecast_energy + switching
+                     + valve_switch + pcm_depletion
+                     + 45.0*max_temp_penalty + 28.0*spread_penalty)
+        best_idx = int(np.argmin(objective))
+        fan,ac,valve=float(F[best_idx]),float(A[best_idx]),float(V[best_idx])
+        best=(float(objective[best_idx]),fan,ac,valve)
+
+        _,fan,ac,valve=best
+        # Smooth commands over the 5-minute controller update interval.
+        fan=float(np.clip(fan,old_fan-0.30,old_fan+0.30))
+        ac=float(np.clip(ac,old_ac-0.16,old_ac+0.16))
     return _clip(fan), _clip(ac), _clip(valve)
 
 def run_one(s, mode, dt=300):

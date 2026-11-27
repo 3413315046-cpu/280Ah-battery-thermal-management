@@ -91,7 +91,7 @@ def line_chart(results, column, title, y_title, target=None):
 st.markdown("""
 <div class="hero">
   <h1>🔋 280Ah 磷酸铁锂储能电池舱</h1>
-  <p>双状态预测 · WT-CPCM被动储热 · 风机空冷+空调辅助制冷 · MPC协同调控</p>
+  <p>双状态预测 · WT-CPCM被动储热 · 风机空冷+空调辅助制冷 · MPC协同调控｜控制器 v8</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -125,11 +125,12 @@ settings = Settings(
 )
 
 @st.cache_data(show_spinner=False)
-def calculate(settings):
+def calculate(settings, controller_version="MPC_v8_20min_thermal_PCM"):
+    # Version token intentionally invalidates cached outputs from earlier controllers.
     return run_all(settings, dt=300)
 
 with st.spinner("正在进行三组同工况仿真……"):
-    results = calculate(settings)
+    results = calculate(settings, controller_version="MPC_v8_20min_thermal_PCM")
 
 summaries = {name: summarize(df, settings) for name, df in results.items()}
 mpc = summaries["双预测MPC"]
@@ -138,6 +139,7 @@ threshold = summaries["固定阈值"]
 best_baseline_energy = min(base["系统总能耗（kWh）"], threshold["系统总能耗（kWh）"])
 energy_saving = (best_baseline_energy - mpc["系统总能耗（kWh）"]) / max(1e-9, best_baseline_energy) * 100
 
+st.caption("当前运行版本：MPC v8｜20/40/60 min滚动预测｜每5 min重选风机、风阀与空调组合")
 st.subheader("同工况三组对照总览")
 k1,k2,k3,k4 = st.columns(4)
 with k1: metric_card("双预测MPC最高温度", f'{mpc["电池最高温度（℃）"]:.2f} ℃', "48小时（或所选时长）仿真")
@@ -145,7 +147,7 @@ with k2: metric_card("双预测MPC最大温差", f'{mpc["最大温差（℃）"]
 with k3: metric_card("双预测MPC系统总能耗", f'{mpc["系统总能耗（kWh）"]:.2f} kWh', f'相对最低能耗对照组 {energy_saving:+.1f}%')
 with k4: metric_card("双预测MPC超温累计时间", f'{mpc["超温累计时间（h）"]:.2f} h', f'温度阈值 {target_t:.1f} ℃')
 
-st.markdown('<div class="note">说明：以下为简化分区热模型计算结果，不是实测或CFD验证数据。三组采用相同工况和设备参数。三组均采用相同风机、空调与风阀硬件。双预测MPC采用滚动预测候选寻优：每个控制周期同时评估风机转速、风阀开度和空调负荷的多种组合，以预测最高温度、最大温差为约束/惩罚项，优先选择瞬时总功率较低的组合。环境温度较低时优先利用风机与PCM；当风机换热温差不足或预测温度越限风险升高时，空调才作为补偿执行器介入。该结果属于简化模型仿真，当环境温度高于电池温度控制目标时，单靠空冷无法使电池低于环境温度；极端高温下仍需制冷补偿。换热系数仍需通过CFD或实验标定。</div>', unsafe_allow_html=True)
+st.markdown('<div class="note">说明：以下为简化分区热模型计算结果，不是实测或CFD验证数据。三组采用相同工况和设备参数。三组均采用相同风机、空调与风阀硬件。双预测MPC采用20 min基础预测时域，并滚动评估20/40/60 min热状态；每5 min同时评估风机转速、风阀开度和空调负荷组合，选择满足温度与温差约束的最低功率方案。环境温度较低且PCM剩余潜热充足时优先利用风机与PCM；当预测温度越限风险升高、风机换热温差不足或PCM潜热缓冲趋于耗尽时，空调才按需介入。空调能耗为零表示该工况下预测判断无需制冷，并非空调被禁用。该结果属于简化模型仿真，当环境温度高于电池温度控制目标时，单靠空冷无法使电池低于环境温度；极端高温下仍需制冷补偿。换热系数仍需通过CFD或实验标定。</div>', unsafe_allow_html=True)
 
 c1,c2,c3 = st.columns(3)
 with c1:
