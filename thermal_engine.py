@@ -152,9 +152,9 @@ def _control(mode, s, tmax, spread, pcm_liquid, slope, old_fan, old_ac,
         # Use the user-selected prediction horizon (default 20 min), not an accidental
         # 10-hour minimum. Evaluate multiple receding forecast points.
         base_h = max(5.0, float(s.prediction_minutes)) / 60.0
-        horizons = (base_h, 2.0*base_h, 3.0*base_h)
-        target_soft = s.target_t - 0.35
-        spread_soft = s.target_spread - 0.10
+        horizons = (base_h, 1.0, 2.5)
+        target_soft = max(s.target_t - 3.0, s.ambient + 1.5)
+        spread_soft = min(s.target_spread - 0.10, 2.0)
 
         fan_candidates = np.array((0.0,0.16,0.24,0.32,0.42,0.52,0.64,0.76,0.88,1.0))
         ac_candidates = np.array((0.0,0.04,0.08,0.12,0.18,0.25,0.35,0.50,0.70))
@@ -197,7 +197,7 @@ def _control(mode, s, tmax, spread, pcm_liquid, slope, old_fan, old_ac,
         pcm_depletion = 0.012*max(0.0,liquid-0.70)*max(0.0,mean_t-s.pcm_t_start)
         objective = (fan_kw+ac_kw + 0.02*forecast_energy + switching
                      + valve_switch + pcm_depletion
-                     + 45.0*max_temp_penalty + 28.0*spread_penalty)
+                     + 120.0*max_temp_penalty + 75.0*spread_penalty)
         best_idx = int(np.argmin(objective))
         fan,ac,valve=float(F[best_idx]),float(A[best_idx]),float(V[best_idx])
         best=(float(objective[best_idx]),fan,ac,valve)
