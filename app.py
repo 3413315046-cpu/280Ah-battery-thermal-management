@@ -16,10 +16,17 @@ st.set_page_config(
 st.markdown("""
 <style>
 :root { color-scheme: light; }
-.stApp { background: #f3f6fb; color: #172b43; }
+.stApp { background: #f3f6fb !important; color: #172b43 !important; }
 [data-testid="stSidebar"] { background: #ffffff; border-right: 1px solid #dbe4ef; }
 .block-container { padding-top: 1.5rem; padding-bottom: 2rem; max-width: 1600px; }
-h1,h2,h3,h4,p,label,span,div { color: inherit; }
+h1,h2,h3,h4,p,label,span,div { color: #172b43; }
+[data-testid="stMarkdownContainer"], [data-testid="stMarkdownContainer"] p,
+[data-testid="stMarkdownContainer"] li { color: #172b43 !important; }
+[data-testid="stMetricLabel"], [data-testid="stMetricValue"],
+[data-testid="stCaptionContainer"], [data-testid="stWidgetLabel"] { color: #172b43 !important; opacity: 1 !important; }
+.stSelectbox label, .stSlider label, .stNumberInput label,
+.stRadio label, .stCheckbox label { color: #172b43 !important; opacity: 1 !important; }
+
 .hero {
   background: linear-gradient(120deg,#102b46 0%,#174d62 100%);
   padding: 26px 30px; border-radius: 18px; color: white; margin-bottom: 18px;
@@ -72,13 +79,13 @@ def line_chart(results, column, title, y_title, target=None):
         title=dict(text=title, font=dict(size=19, color="#17334f")),
         height=390, template="plotly_white", hovermode="x unified",
         margin=dict(l=25,r=25,t=65,b=35),
-        legend=dict(orientation="h", y=-0.22, font=dict(color="#314b63")),
+        legend=dict(orientation="h", y=-0.22, font=dict(color="#172b43", size=13)),
         xaxis_title="运行时间（h）", yaxis_title=y_title,
-        font=dict(color="#243b53"),
+        font=dict(color="#172b43", size=13),
         paper_bgcolor="#ffffff", plot_bgcolor="#ffffff",
     )
-    fig.update_xaxes(showgrid=True, gridcolor="#e6edf4", zeroline=False)
-    fig.update_yaxes(showgrid=True, gridcolor="#e6edf4", zeroline=False)
+    fig.update_xaxes(showgrid=True, gridcolor="#d8e2ed", zeroline=False, tickfont=dict(color="#172b43", size=12), title_font=dict(color="#172b43"))
+    fig.update_yaxes(showgrid=True, gridcolor="#d8e2ed", zeroline=False, tickfont=dict(color="#172b43", size=12), title_font=dict(color="#172b43"))
     return fig
 
 st.markdown("""
@@ -138,7 +145,7 @@ with k2: metric_card("双预测MPC最大温差", f'{mpc["最大温差（℃）"]
 with k3: metric_card("双预测MPC系统总能耗", f'{mpc["系统总能耗（kWh）"]:.2f} kWh', f'相对固定阈值组 {energy_saving:+.1f}%')
 with k4: metric_card("双预测MPC超温累计时间", f'{mpc["超温累计时间（h）"]:.2f} h', f'温度阈值 {target_t:.1f} ℃')
 
-st.markdown('<div class="note">说明：以下为当前简化分区热模型的计算结果，属于仿真演示数据，不是电池舱实测或经CFD验证的性能数据。三组采用相同环境温度、初始温度、负荷时序、设备规格和仿真时长；实际性能结论需用后续标定参数复核。</div>', unsafe_allow_html=True)
+st.markdown('<div class="note">说明：以下为简化分区热模型计算结果，不是实测或CFD验证数据。三组采用相同工况和设备参数。双预测MPC通过温度趋势预测、PCM潜热余量判断及分区风量分配，尝试减少不必要的高功率运行；节能幅度和温控效果仍需用真实参数标定复核。</div>', unsafe_allow_html=True)
 
 c1,c2,c3 = st.columns(3)
 with c1:
@@ -172,29 +179,33 @@ with tab1:
     ]:
         fig.add_trace(go.Bar(name=label, x=order, y=[summaries[n][col] for n in order]))
     fig.update_layout(barmode="stack", template="plotly_white", height=350,
-                      title="三组系统总能耗分项", yaxis_title="能耗（kWh）",
-                      font=dict(color="#243b53"))
-    st.plotly_chart(fig, use_container_width=True)
+                      title=dict(text="三组系统总能耗分项", font=dict(color="#172b43", size=19)),
+                      yaxis_title="能耗（kWh）", font=dict(color="#172b43", size=13),
+                      paper_bgcolor="#ffffff", plot_bgcolor="#ffffff",
+                      legend=dict(font=dict(color="#172b43", size=13)))
+    fig.update_xaxes(tickfont=dict(color="#172b43"), title_font=dict(color="#172b43"), gridcolor="#d8e2ed")
+    fig.update_yaxes(tickfont=dict(color="#172b43"), title_font=dict(color="#172b43"), gridcolor="#d8e2ed")
+    st.plotly_chart(fig, use_container_width=True, theme=None)
 
 with tab2:
-    st.plotly_chart(line_chart(results,"Tmax_C","电池舱最高温度变化","温度（℃）",target_t), use_container_width=True)
-    st.plotly_chart(line_chart(results,"Tmean_C","电池舱平均温度变化","温度（℃）"), use_container_width=True)
-    st.plotly_chart(line_chart(results,"dTmax_C","电池组最大温差变化","最大温差（℃）",target_spread), use_container_width=True)
+    st.plotly_chart(line_chart(results,"Tmax_C","电池舱最高温度变化","温度（℃）",target_t), use_container_width=True, theme=None)
+    st.plotly_chart(line_chart(results,"Tmean_C","电池舱平均温度变化","温度（℃）"), use_container_width=True, theme=None)
+    st.plotly_chart(line_chart(results,"dTmax_C","电池组最大温差变化","最大温差（℃）",target_spread), use_container_width=True, theme=None)
 
 with tab3:
     st.subheader("WT-CPCM储热状态")
-    st.plotly_chart(line_chart(results,"PCM_T_C","PCM等效温度变化","温度（℃）"), use_container_width=True)
-    st.plotly_chart(line_chart(results,"PCM_liquid","PCM液相率变化","液相率（0–1）"), use_container_width=True)
-    st.plotly_chart(line_chart(results,"PCM_remaining_MJ","PCM剩余潜热储能变化","剩余储热能力（MJ）"), use_container_width=True)
+    st.plotly_chart(line_chart(results,"PCM_T_C","PCM等效温度变化","温度（℃）"), use_container_width=True, theme=None)
+    st.plotly_chart(line_chart(results,"PCM_liquid","PCM液相率变化","液相率（0–1）"), use_container_width=True, theme=None)
+    st.plotly_chart(line_chart(results,"PCM_remaining_MJ","PCM剩余潜热储能变化","剩余储热能力（MJ）"), use_container_width=True, theme=None)
     st.caption("PCM指标用于展示被动储热状态并参与MPC决策；其数值依赖PCM体积、密度、潜热和热耦合参数。")
 
 with tab4:
-    st.plotly_chart(line_chart(results,"fan_speed","风机转速指令变化","转速比例（0–1）"), use_container_width=True)
-    st.plotly_chart(line_chart(results,"ac_fraction","空调负荷指令变化","负荷比例（0–1）"), use_container_width=True)
-    st.plotly_chart(line_chart(results,"valve_pct","电动风阀开度变化","开度（%）"), use_container_width=True)
-    st.plotly_chart(line_chart(results,"total_energy_kWh","系统累计能耗变化","累计能耗（kWh）"), use_container_width=True)
-    st.plotly_chart(line_chart(results,"fan_energy_kWh","风机累计能耗变化","累计能耗（kWh）"), use_container_width=True)
-    st.plotly_chart(line_chart(results,"ac_energy_kWh","空调累计能耗变化","累计能耗（kWh）"), use_container_width=True)
+    st.plotly_chart(line_chart(results,"fan_speed","风机转速指令变化","转速比例（0–1）"), use_container_width=True, theme=None)
+    st.plotly_chart(line_chart(results,"ac_fraction","空调负荷指令变化","负荷比例（0–1）"), use_container_width=True, theme=None)
+    st.plotly_chart(line_chart(results,"valve_pct","电动风阀开度变化","开度（%）"), use_container_width=True, theme=None)
+    st.plotly_chart(line_chart(results,"total_energy_kWh","系统累计能耗变化","累计能耗（kWh）"), use_container_width=True, theme=None)
+    st.plotly_chart(line_chart(results,"fan_energy_kWh","风机累计能耗变化","累计能耗（kWh）"), use_container_width=True, theme=None)
+    st.plotly_chart(line_chart(results,"ac_energy_kWh","空调累计能耗变化","累计能耗（kWh）"), use_container_width=True, theme=None)
 
 with tab5:
     st.subheader("风机参数")
