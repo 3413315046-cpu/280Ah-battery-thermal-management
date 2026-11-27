@@ -125,12 +125,12 @@ settings = Settings(
 )
 
 @st.cache_data(show_spinner=False)
-def calculate(settings, controller_version="MPC_v10_temperature_priority_target34p5_2p5h"):
+def calculate(settings, controller_version="MPC_v11_lexicographic_energy_after_thermal_2p5h"):
     # Version token intentionally invalidates cached outputs from earlier controllers.
     return run_all(settings, dt=300)
 
 with st.spinner("正在进行三组同工况仿真……"):
-    results = calculate(settings, controller_version="MPC_v10_temperature_priority_target34p5_2p5h")
+    results = calculate(settings, controller_version="MPC_v11_lexicographic_energy_after_thermal_2p5h")
 
 summaries = {name: summarize(df, settings) for name, df in results.items()}
 mpc = summaries["双预测MPC"]
@@ -139,7 +139,7 @@ threshold = summaries["固定阈值"]
 best_baseline_energy = min(base["系统总能耗（kWh）"], threshold["系统总能耗（kWh）"])
 energy_saving = (best_baseline_energy - mpc["系统总能耗（kWh）"]) / max(1e-9, best_baseline_energy) * 100
 
-st.caption("当前运行版本：MPC v10｜温度优先多目标控制｜目标34.5℃｜20 min+1 h+2.5 h预测")
+st.caption("当前运行版本：MPC v11｜温度约束优先、约束内最低能耗｜默认温度跟踪上限35.85℃｜20 min+1 h+2.5 h预测")
 st.subheader("同工况三组对照总览")
 k1,k2,k3,k4 = st.columns(4)
 with k1: metric_card("双预测MPC最高温度", f'{mpc["电池最高温度（℃）"]:.2f} ℃', "48小时（或所选时长）仿真")
@@ -147,7 +147,7 @@ with k2: metric_card("双预测MPC最大温差", f'{mpc["最大温差（℃）"]
 with k3: metric_card("双预测MPC系统总能耗", f'{mpc["系统总能耗（kWh）"]:.2f} kWh', f'相对最低能耗对照组 {energy_saving:+.1f}%')
 with k4: metric_card("双预测MPC超温累计时间", f'{mpc["超温累计时间（h）"]:.2f} h', f'温度阈值 {target_t:.1f} ℃')
 
-st.markdown('<div class="note">说明：以下为简化分区热模型计算结果，不是实测或CFD验证数据。三组采用相同工况和设备参数。三组均采用相同风机、空调与风阀硬件。双预测MPC采用以20 min短期预测结合1 h和2.5 h中长期预测；每5 min同时评估风机转速、风阀开度和空调负荷组合，以34.5℃为默认温度跟踪目标（环境温度较高时设环境温度+1.5℃下限），优先降低最高温度和温差，能耗作为次级目标。环境温度较低且PCM剩余潜热充足时优先利用风机与PCM；当预测温度越限风险升高、风机换热温差不足或PCM潜热缓冲趋于耗尽时，空调才按需介入。空调能耗为零表示该工况下预测判断无需制冷，并非空调被禁用。该结果属于简化模型仿真，温度目标随环境温度设置合理的换热逼近余量，避免在高环境温度下无意义地追求低于环境温度的目标；极端高温下仍需制冷补偿。换热系数仍需通过CFD或实验标定。</div>', unsafe_allow_html=True)
+st.markdown('<div class="note">说明：以下为简化分区热模型计算结果，不是实测或CFD验证数据。三组采用相同工况和设备参数。三组均采用相同风机、空调与风阀硬件。双预测MPC采用以20 min短期预测结合1 h和2.5 h中长期预测；每5 min同时评估风机转速、风阀开度和空调负荷组合，先约束最高温度与区域温差，再在热约束可行的候选组合中选择最低能耗；默认温度跟踪上限35.85℃（随用户温度目标及环境温度调整）。环境温度较低且PCM剩余潜热充足时优先利用风机与PCM；当预测温度越限风险升高、风机换热温差不足或PCM潜热缓冲趋于耗尽时，空调才按需介入。空调能耗为零表示该工况下预测判断无需制冷，并非空调被禁用。该结果属于简化模型仿真，温度目标随环境温度设置合理的换热逼近余量，避免在高环境温度下无意义地追求低于环境温度的目标；极端高温下仍需制冷补偿。换热系数仍需通过CFD或实验标定。</div>', unsafe_allow_html=True)
 
 c1,c2,c3 = st.columns(3)
 with c1:
