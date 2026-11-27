@@ -111,25 +111,47 @@ def _ac_power(s, fraction):
     return _ac_spec(s)["rated_power_kW"]*_clip(fraction)**1.5
 
 def _control(mode, s, tmax, spread, pcm_liquid, slope, old_fan, old_ac):
-    """三组同硬件风机+风阀控制；本方案不配置空调。"""
+    """
+    三组采用相同风机、空调和风阀硬件：
+    固定送风：固定风机转速，温度达到阈值后启用空调；
+    固定阈值：仅依据当前温度/温差分段调节；
+    双预测MPC：依据温度趋势、环境温度、负荷倍率、PCM储热状态预测调节。
+    """
     if mode == "固定送风":
         fan = _clip(s.fixed_speed)
+        ac = 0.0 if tmax < 40.0 else _clip(s.fixed_ac_fraction)
         valve = _clip(s.fixed_valve)
     elif mode == "固定阈值":
         fan = 0.0 if tmax < 35.0 else (0.58 if tmax < 38.0 else 0.88)
+        ac = 0.0 if tmax < 39.0 else (0.32 if tmax < 41.0 else 0.62)
         valve = 0.68 if spread < s.target_spread else 0.95
     else:
         horizon = max(1, s.prediction_minutes) / 60.0
         load_now = _heat_load(s, 0.0)
         predicted = tmax + max(-0.03, slope) * horizon + 0.18 * load_now
         pcm_risk = max(0.0, pcm_liquid - 0.55) * 1.5
-        predicted_risk = predicted + pcm_risk
-        spread_risk = max(0.0, spread - 1.0)
-        fan = _clip(0.20 + 0.11 * max(0.0, predicted_risk - 33.5)
-                    + 0.12 * spread_risk, 0.20, 0.95)
+        risk = predicted + pcm_risk
+
+        # 风机负责高效基础排热，并根据环境温度、负荷倍率进行前馈补偿。
+        fan = _clip(
+            0.32
+            + 0.055 * max(0.0, s.ambient - 30.0)
+            + 0.12 * max(0.0, s.rate - 1.0)
+            + 0.01 * max(0.0, risk - 34.0)
+            + 0.05 * max(0.0, spread - 1.0),
+            0.18, 0.85
+        )
+
+        # 空调作为二级调节执行器：预测风险接近温度约束时才介入，
+        # 限制最大负荷，避免空调长时间高功率运行。
+        ac = _clip(0.03 * max(0.0, risk - 35.0), 0.0, 0.25)
+
+        # 风机与空调均设置变化率约束，避免执行器频繁突变。
         fan = float(np.clip(fan, old_fan - 0.15, old_fan + 0.15))
+        ac = float(np.clip(ac, old_ac - 0.05, old_ac + 0.05))
         valve = _clip(0.65 + 0.12 * max(0.0, spread - 1.0), 0.65, 1.0)
-    return _clip(fan), 0.0, _clip(valve)
+
+    return _clip(fan), _clip(ac), _clip(valve)
 
 def run_one(s, mode, dt=300):
     dt = max(10, int(dt))
@@ -146,9 +168,9 @@ def run_one(s, mode, dt=300):
     prev_tmax = float(zone.max())
     rows = []
 
-    fan_spec = _fan_spec(s)
+    fan_spec, ac_spec = _fan_spec(s), _ac_spec(s)
     airflow_full = fan_spec["rated_airflow_m3h"]*max(1, s.fans)
-    ac_capacity = 0.0
+    ac_capacity = ac_spec["cooling_capacity_kW"]
     heat_pattern = np.array([0.94,0.98,1.02,1.07,1.05,1.00,0.97,0.97])
     cooling_pattern = np.array([1.10,1.06,1.02,0.96,0.92,0.94,0.99,1.01])
     cap_kwh_k = max(0.5, s.pack_heat_capacity_kJ_K/3600.0)
@@ -162,17 +184,17 @@ def run_one(s, mode, dt=300):
         fan, ac, valve = _control(mode,s,tmax,spread,liquid,slope,fan_old,ac_old)
 
         fan_kw = _fan_power(s,fan)
-        ac_kw = 0.0
+        ac_kw = _ac_power(s,ac)
         valve_kw = 0.004 if abs(valve-valve_old)>0.025 else 0.0
         aux_kw = 0.018
         airflow = airflow_full*fan*valve
         load = _heat_load(s,hour)
         passive = s.passive_loss_kW_K*(mean_t-s.ambient)
 
-        # 仅计算风机强制对流换热；本方案不配置空调。
+        # 风机强制对流与空调制冷量共同计入热平衡。
         fan_cooling = min(airflow*0.00012*max(0.0,mean_t-s.ambient+1.0),
                           1.00*load)
-        ac_cooling = 0.0
+        ac_cooling = ac_capacity*ac*0.82
 
         # PCM与电池区之间的有限热耦合。正值表示PCM吸热；负值表示向电池回热。
         pcm_temp, liquid, pcm_remain, latent_kwh = _pcm_state(s,pcm_h,mass)
@@ -185,7 +207,7 @@ def run_one(s, mode, dt=300):
         if liquid <= 0.001 and q_pcm < 0:
             q_pcm *= 0.10
 
-        local_cooling = fan_cooling*cooling_pattern
+        local_cooling = (fan_cooling+ac_cooling)*cooling_pattern
         local_load = load*heat_pattern
         if mode == "双预测MPC":
             # 分区预测调风：高于均温的区域获得更多冷量，低温区域减少送风。
