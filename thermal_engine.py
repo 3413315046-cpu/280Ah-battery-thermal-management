@@ -192,8 +192,8 @@ def _control(mode, s, tmax, spread, pcm_liquid, slope, old_fan, old_ac,
 def run_one(s, mode, dt=300):
     dt = max(10, int(dt))
     hours = float(np.clip(s.duration_h, 0.1, 48.0))
-    n = int(hours*3600/dt)+1
-    times = np.arange(n)*dt/3600.0
+    total_seconds = hours * 3600.0
+    n_steps = int(np.ceil(total_seconds / dt - 1e-12))
     zone = np.full(8, float(s.initial))
     mass = max(0.0, s.pcm_volume*s.pcm_density)
     pcm_h = max(0.0, (s.initial-s.ambient)*mass*s.pcm_cp/3.6e6)
@@ -212,13 +212,16 @@ def run_one(s, mode, dt=300):
     cap_kwh_k = max(0.5, s.pack_heat_capacity_kJ_K/3600.0)
     pcm_cp_kwh_k = max(1e-9, mass*s.pcm_cp/3.6e6)
 
-    for hour in times:
+    for step_index in range(n_steps):
+        elapsed_seconds = step_index * dt
+        step_seconds = min(float(dt), total_seconds - elapsed_seconds)
+        hour = elapsed_seconds / 3600.0
         tmax, tmin = float(zone.max()), float(zone.min())
         spread, mean_t = tmax-tmin, float(zone.mean())
-        slope = (tmax-prev_tmax)/max(dt/3600.0, 1e-9)
+        slope = (tmax-prev_tmax)/max(step_seconds/3600.0, 1e-9)
         pcm_temp, liquid, pcm_remain, latent_kwh = _pcm_state(s, pcm_h, mass)
         fan, ac, valve = _control(mode,s,tmax,spread,liquid,slope,fan_old,ac_old,
-                                 zone=zone,hour=hour,pcm_temp=pcm_temp,dt_seconds=dt)
+                                 zone=zone,hour=hour,pcm_temp=pcm_temp,dt_seconds=step_seconds)
 
         fan_kw = _fan_power(s,fan)
         ac_kw = _ac_power(s,ac)
@@ -258,26 +261,26 @@ def run_one(s, mode, dt=300):
         net -= q_pcm*pcm_weights
         # 相邻区域热交换，保留热不均匀，同时避免温差数值发散。
         net += 0.18*(zone.mean()-zone)
-        zone += net*(dt/3600.0)/cap_kwh_k
+        zone += net*(step_seconds/3600.0)/cap_kwh_k
         zone = np.clip(zone,5.0,65.0)
 
         # 更新PCM焓：显热段、相变潜热段、完全熔化后的显热段连续衔接。
-        pcm_h += q_pcm*(dt/3600.0)
+        pcm_h += q_pcm*(step_seconds/3600.0)
         pcm_temp, liquid, pcm_remain, latent_kwh = _pcm_state(s,pcm_h,mass)
 
-        fan_e += fan_kw*dt/3600.0
-        ac_e += ac_kw*dt/3600.0
-        valve_e += valve_kw*dt/3600.0
-        aux_e += aux_kw*dt/3600.0
-        if fan>0.02: fan_h += dt/3600.0
-        if ac>0.02: ac_h += dt/3600.0
-        if tmax>s.target_t: over_h += dt/3600.0
-        if spread>s.target_spread: spread_over_h += dt/3600.0
+        fan_e += fan_kw*step_seconds/3600.0
+        ac_e += ac_kw*step_seconds/3600.0
+        valve_e += valve_kw*step_seconds/3600.0
+        aux_e += aux_kw*step_seconds/3600.0
+        if fan>0.02: fan_h += step_seconds/3600.0
+        if ac>0.02: ac_h += step_seconds/3600.0
+        if tmax>s.target_t: over_h += step_seconds/3600.0
+        if spread>s.target_spread: spread_over_h += step_seconds/3600.0
         total_e=fan_e+ac_e+valve_e+aux_e
 
         zmax,zmin=float(zone.max()),float(zone.min())
         row={
-            "time_h":hour,"Tmax_C":zmax,"Tmin_C":zmin,
+            "time_h":(elapsed_seconds+step_seconds)/3600.0,"Tmax_C":zmax,"Tmin_C":zmin,
             "dTmax_C":zmax-zmin,"Tmean_C":float(zone.mean()),
             "Tair_mean_C":float(s.ambient),"PCM_T_C":pcm_temp,
             "PCM_liquid":liquid,"PCM_remaining_MJ":pcm_remain,

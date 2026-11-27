@@ -170,6 +170,9 @@ with tab1:
     table = pd.DataFrame({name: summaries[name] for name in order}).T[metric_rows].T
     st.dataframe(table, use_container_width=True)
     st.caption("最大温差为各时刻八个等效区域最高温度与最低温度之差的全时段最大值；不会将固定组温差人为置零。")
+    last_time = max(float(df["time_h"].iloc[-1]) for df in results.values())
+    last_dt = float(results["双预测MPC"]["time_h"].iloc[-1] - results["双预测MPC"]["time_h"].iloc[-2]) if len(results["双预测MPC"]) > 1 else 0.0
+    st.caption(f"时间积分校验：设定时长 {duration} h，结果终点 {last_time:.3f} h；最后一个时间步 {last_dt*60:.2f} min。终点只记录状态，不额外累计下一时间步能耗。")
     st.subheader("系统总能耗构成")
     st.caption("双预测MPC不是固定开启空调：每5分钟根据预测状态重新选择风机、风阀和空调组合。低环境温度下尽量由风机与PCM承担热管理；环境温度接近电池温度时，风机换热能力下降，空调才增加补偿。")
     fig = go.Figure()
