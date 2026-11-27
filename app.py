@@ -145,7 +145,7 @@ with k2: metric_card("双预测MPC最大温差", f'{mpc["最大温差（℃）"]
 with k3: metric_card("双预测MPC系统总能耗", f'{mpc["系统总能耗（kWh）"]:.2f} kWh', f'相对最低能耗对照组 {energy_saving:+.1f}%')
 with k4: metric_card("双预测MPC超温累计时间", f'{mpc["超温累计时间（h）"]:.2f} h', f'温度阈值 {target_t:.1f} ℃')
 
-st.markdown('<div class="note">说明：以下为简化分区热模型计算结果，不是实测或CFD验证数据。三组采用相同工况和设备参数。三组均采用相同风机、空调与风阀硬件。双预测MPC采用节能优先的分级控制：风机承担基础排热，并按环境温度、倍率和温差前馈补偿；只有预测温度风险接近高温区时才调用空调，避免空调过早介入。空调保留为辅助制冷执行器；换热系数仍需通过CFD或实验标定。</div>', unsafe_allow_html=True)
+st.markdown('<div class="note">说明：以下为简化分区热模型计算结果，不是实测或CFD验证数据。三组采用相同工况和设备参数。三组均采用相同风机、空调与风阀硬件。双预测MPC采用滚动预测候选寻优：每个控制周期同时评估风机转速、风阀开度和空调负荷的多种组合，以预测最高温度、最大温差为约束/惩罚项，优先选择瞬时总功率较低的组合。环境温度较低时优先利用风机与PCM；当风机换热温差不足或预测温度越限风险升高时，空调才作为补偿执行器介入。该结果属于简化模型仿真，当环境温度高于电池温度控制目标时，单靠空冷无法使电池低于环境温度；极端高温下仍需制冷补偿。换热系数仍需通过CFD或实验标定。</div>', unsafe_allow_html=True)
 
 c1,c2,c3 = st.columns(3)
 with c1:
@@ -153,7 +153,7 @@ with c1:
 with c2:
     st.markdown('<div class="group-card"><h3>② 固定阈值组</h3><p>依据当前最高温度和温差分段调节风机、空调与风阀，不使用未来状态预测。</p></div>', unsafe_allow_html=True)
 with c3:
-    st.markdown('<div class="group-card"><h3>③ 双预测 MPC 组</h3><p>结合电池温度趋势、环境温度、负荷倍率、PCM储热状态和分区温差进行滚动决策；风机承担基础排热，空调仅在预测风险接近高温区时辅助介入，并协同调节风阀。</p></div>', unsafe_allow_html=True)
+    st.markdown('<div class="group-card"><h3>③ 双预测 MPC 组</h3><p>结合八区温度状态、温度变化趋势、环境温度、负荷倍率和PCM储热状态，在候选风机转速—风阀开度—空调负荷组合中滚动寻优；优先采用单位能耗排热效率较高的设备，空调仅在预测约束需要时补偿。</p></div>', unsafe_allow_html=True)
 
 tab1,tab2,tab3,tab4,tab5 = st.tabs(["① 对照评价","② 温度与温差","③ PCM储热状态","④ 设备控制与能耗","⑤ 设备参数库"])
 
@@ -171,6 +171,7 @@ with tab1:
     st.dataframe(table, use_container_width=True)
     st.caption("最大温差为各时刻八个等效区域最高温度与最低温度之差的全时段最大值；不会将固定组温差人为置零。")
     st.subheader("系统总能耗构成")
+    st.caption("双预测MPC不是固定开启空调：每5分钟根据预测状态重新选择风机、风阀和空调组合。低环境温度下尽量由风机与PCM承担热管理；环境温度接近电池温度时，风机换热能力下降，空调才增加补偿。")
     fig = go.Figure()
     for col,label,color in [
         ("风机累计能耗（kWh）","风机","#347fbd"),
