@@ -1,140 +1,221 @@
-from pathlib import Path
+import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-import streamlit as st
+from plotly.subplots import make_subplots
+
 from thermal_engine import Settings, run_all, summarize, FAN_DB, AC_DB
 
-ROOT=Path(__file__).parent
-st.set_page_config(page_title="280Ah储能电池舱｜双预测MPC",page_icon="🔋",layout="wide")
-st.markdown("""<style>
-.stApp{background:#F3F7FC;color:#18324A}
-[data-testid="stHeader"]{background:#F3F7FC}
-section[data-testid="stSidebar"]{background:#FFFFFF;border-right:1px solid #D8E3EE}
-section[data-testid="stSidebar"] *{color:#213B55 !important}
-.block-container{max-width:1600px;padding-top:1rem}
-h1,h2,h3{color:#173650 !important}
-p,span,label,.stMarkdown{color:#263F57}
-[data-testid="stMetric"]{background:white;border:1px solid #DCE6EF;border-radius:14px;padding:14px;box-shadow:0 4px 18px #1B46620A}
-.hero{padding:25px 30px;border-radius:18px;background:linear-gradient(110deg,#173D5B,#167D83,#159B8D);margin-bottom:14px}
-.hero h1{color:white!important;margin:0;font-size:2rem}.hero p{color:#E4F8F6;margin:8px 0 0}
-.note{padding:11px 14px;border-left:4px solid #168B9A;background:#E8F3F8;border-radius:8px;color:#24445E}
-</style>""",unsafe_allow_html=True)
-st.markdown('<div class="hero"><h1>🔋 280Ah储能电池舱智能热管理平台</h1><p>固定送风 · 固定阈值反馈 · 电池温度/PCM状态双预测＋MPC｜风机、空调、风阀协同</p></div>',unsafe_allow_html=True)
-st.markdown('<div class="note">三组共用同一电池—空气—PCM热模型、相同负荷与设备参数，仅控制策略不同。页面结果为降阶模型计算，不是实测或已完成CFD校准的结果。</div>',unsafe_allow_html=True)
+st.set_page_config(
+    page_title="280Ah储能电池舱｜双状态预测与智能热管理",
+    page_icon="🔋",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# 高对比度浅色主题：保证标题、图例、坐标轴与正文清晰可读
+st.markdown("""
+<style>
+:root { color-scheme: light; }
+.stApp { background: #f3f6fb; color: #172b43; }
+[data-testid="stSidebar"] { background: #ffffff; border-right: 1px solid #dbe4ef; }
+.block-container { padding-top: 1.5rem; padding-bottom: 2rem; max-width: 1600px; }
+h1,h2,h3,h4,p,label,span,div { color: inherit; }
+.hero {
+  background: linear-gradient(120deg,#102b46 0%,#174d62 100%);
+  padding: 26px 30px; border-radius: 18px; color: white; margin-bottom: 18px;
+  box-shadow: 0 8px 24px rgba(15,45,70,.12);
+}
+.hero h1,.hero p { color: #ffffff !important; margin: 0; }
+.hero p { opacity: .88; margin-top: 8px; }
+.kpi {
+  background: #ffffff; border: 1px solid #dce6f0; border-radius: 14px;
+  padding: 16px 18px; min-height: 108px; box-shadow: 0 2px 8px rgba(20,45,70,.04);
+}
+.kpi-label { color: #52677d; font-size: 14px; font-weight: 600; }
+.kpi-value { color: #122b45; font-size: 29px; font-weight: 750; margin-top: 8px; }
+.kpi-sub { color: #557087; font-size: 12px; margin-top: 3px; }
+.group-card {
+  background: white; border: 1px solid #dce6f0; border-radius: 14px;
+  padding: 17px; height: 100%;
+}
+.group-card h3 { color: #17334f; margin-top: 0; }
+.group-card p { color: #536b80; margin-bottom: 0; }
+.note {
+  background: #fff8e8; border: 1px solid #f0d9a6; color: #6f4e10;
+  padding: 12px 15px; border-radius: 10px; font-size: 13px;
+}
+div[data-testid="stDataFrame"] { background: white; }
+</style>
+""", unsafe_allow_html=True)
+
+COLORS = {"固定送风": "#8396aa", "固定阈值": "#347fbd", "双预测MPC": "#079b8b"}
+
+def metric_card(label, value, sub=""):
+    st.markdown(
+        f'<div class="kpi"><div class="kpi-label">{label}</div>'
+        f'<div class="kpi-value">{value}</div><div class="kpi-sub">{sub}</div></div>',
+        unsafe_allow_html=True
+    )
+
+def line_chart(results, column, title, y_title, target=None):
+    fig = go.Figure()
+    for name, df in results.items():
+        fig.add_trace(go.Scatter(
+            x=df["time_h"], y=df[column], mode="lines", name=name,
+            line=dict(color=COLORS[name], width=3 if name == "双预测MPC" else 2.2),
+            hovertemplate="%{x:.1f} h<br>%{y:.2f}<extra>" + name + "</extra>"
+        ))
+    if target is not None:
+        fig.add_hline(y=target, line_dash="dash", line_color="#df8b28",
+                      annotation_text=f"控制目标 {target:g}", annotation_position="top right")
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=19, color="#17334f")),
+        height=390, template="plotly_white", hovermode="x unified",
+        margin=dict(l=25,r=25,t=65,b=35),
+        legend=dict(orientation="h", y=-0.22, font=dict(color="#314b63")),
+        xaxis_title="运行时间（h）", yaxis_title=y_title,
+        font=dict(color="#243b53"),
+        paper_bgcolor="#ffffff", plot_bgcolor="#ffffff",
+    )
+    fig.update_xaxes(showgrid=True, gridcolor="#e6edf4", zeroline=False)
+    fig.update_yaxes(showgrid=True, gridcolor="#e6edf4", zeroline=False)
+    return fig
+
+st.markdown("""
+<div class="hero">
+  <h1>🔋 280Ah 磷酸铁锂储能电池舱</h1>
+  <p>双状态预测 · WT-CPCM被动储热 · 空冷主动排热 · MPC协同调控</p>
+</div>
+""", unsafe_allow_html=True)
 
 with st.sidebar:
- st.header("运行工况")
- ambient=st.slider("环境温度（℃）",10,45,30,1)
- initial=st.slider("电池初始温度（℃）",15,55,30,1)
- rate=st.slider("放电倍率（C）",.2,2.,1.,.1)
- hours=st.slider("运行时长（h）",1,48,48,1)
- profile=st.selectbox("负荷时序",["完整充放电循环","高负荷间歇循环","单次放电后静置"])
- with st.expander("电池热参数（候选值，待辨识）"):
-  resistance=st.number_input("等效内阻（mΩ）",.05,2.,.25,.05)
-  mass=st.number_input("单体质量（kg）",1.,15.,5.49,.1)
-  cp=st.number_input("单体比热（J/(kg·K)）",500,2000,1000,50)
- st.header("风机与风阀")
- fan_type=st.selectbox("舱级风机",list(FAN_DB))
- nfan=st.slider("风机数量",1,12,4)
- fixed_speed=st.slider("固定送风转速（%）",20,100,70,5)
- fixed_valve=st.slider("固定风阀开度（%）",25,100,75,5)
- st.header("空调配置")
- ac_type=st.selectbox("温控机组",list(AC_DB))
- ac_setpoint=st.slider("固定送风组空调回风设定（℃）",20.,32.,27.,.5)
- fixed_ac=st.slider("固定送风组压缩机负荷比例（%）",10,100,55,5)
- st.header("MPC设置")
- target=st.slider("电池最高温度目标（℃）",34.,43.,38.,.5)
- spread=st.slider("最大温差目标（℃）",2.,5.,3.,.5)
- pred=st.selectbox("预测时域（min）",[10,20,30],index=1)
- update=st.selectbox("滚动控制间隔（min）",[2,5],index=1)
+    st.header("⚙️ 运行工况")
+    ambient = st.slider("环境温度（℃）", 15, 45, 30, 1)
+    initial = st.slider("电池初始温度（℃）", 15, 45, 30, 1)
+    rate = st.slider("等效热负荷倍率", 0.2, 2.0, 1.0, 0.05)
+    duration = st.slider("仿真运行时长（h）", 1, 48, 48, 1)
+    profile = st.selectbox("电池负荷时序", ["完整充放电循环", "恒定放电", "间歇运行"])
+    st.divider()
+    st.subheader("设备配置")
+    fan_type = st.selectbox("舱级风机", list(FAN_DB.keys()))
+    fans = st.number_input("风机数量", min_value=1, max_value=16, value=4, step=1)
+    ac_type = st.selectbox("空调机组", list(AC_DB.keys()))
+    fixed_speed = st.slider("固定送风组风机转速比例", 0.2, 1.0, 0.70, 0.05)
+    fixed_valve = st.slider("固定送风组风阀开度（%）", 20, 100, 75, 5) / 100
+    st.divider()
+    st.subheader("控制目标")
+    target_t = st.slider("电池最高温度控制目标（℃）", 32, 45, 38, 1)
+    target_spread = st.slider("最大温差控制目标（℃）", 1.0, 5.0, 3.0, 0.1)
+    ac_setpoint = st.slider("空调参考设定温度（℃）", 20, 32, 27, 1)
+    st.caption("设备功率与风量采用当前录入的典型规格；热负荷及舱级等效热参数仍需后续标定。")
 
-geom=pd.read_csv(ROOT/"data"/"Stage15_v4_7_1_24个侧面PCM区域几何参数.csv")
-pcm_volume=float(geom["Allocated_PCM_Volume_m3"].sum())
-s=Settings(ambient=ambient,initial=initial,rate=rate,duration_h=hours,profile=profile,
- resistance_mohm=resistance,cell_mass=mass,cell_cp=cp,fans=nfan,fan_type=fan_type,
- fixed_speed=fixed_speed/100.,fixed_valve=fixed_valve/100.,target_t=target,target_spread=spread,
- prediction_minutes=pred,update_minutes=update,pcm_volume=pcm_volume,ac_type=ac_type,
- ac_setpoint=ac_setpoint,fixed_ac_fraction=fixed_ac/100.)
-@st.cache_data(show_spinner=False,max_entries=24)
+settings = Settings(
+    ambient=float(ambient), initial=float(initial), rate=float(rate),
+    duration_h=int(duration), profile=profile,
+    fans=int(fans), fan_type=fan_type, ac_type=ac_type,
+    fixed_speed=float(fixed_speed), fixed_valve=float(fixed_valve),
+    target_t=float(target_t), target_spread=float(target_spread),
+    ac_setpoint=float(ac_setpoint),
+)
+
+@st.cache_data(show_spinner=False)
 def calculate(settings):
- return run_all(settings,dt=60)
-with st.spinner("正在计算0–48小时三组温度、控制动作和能耗轨迹…"):
- results=calculate(s)
-labels=list(results)
-colors={"固定送风":"#8797A8","固定阈值":"#367CB8","双预测MPC":"#07998C"}
-metrics={k:summarize(v,s) for k,v in results.items()}
-summary=pd.DataFrame(metrics)
-base=metrics["固定阈值"]["系统总能耗（kWh）"]
-mpc=metrics["双预测MPC"]["系统总能耗（kWh）"]
-saving=(base-mpc)/max(base,1e-9)*100
-m=metrics["双预测MPC"]
-a,b,c,d=st.columns(4)
-a.metric("MPC组最高温度",f'{m["电池最高温度（℃）"]:.2f}℃',f'较阈值组低 {metrics["固定阈值"]["电池最高温度（℃）"]-m["电池最高温度（℃）"]:.2f}℃')
-b.metric("MPC组最大温差",f'{m["最大温差（℃）"]:.2f}℃',f'较阈值组低 {metrics["固定阈值"]["最大温差（℃）"]-m["最大温差（℃）"]:.2f}℃')
-c.metric("MPC组系统总能耗",f'{mpc:.2f} kWh',f'较阈值组 {saving:+.1f}%',delta_color="inverse")
-d.metric("MPC组超温累计时间",f'{m["超温累计时间（h）"]:.2f} h',f'阈值组 {metrics["固定阈值"]["超温累计时间（h）"]:.2f} h')
-if m["最大温差（℃）"]>spread or m["电池最高温度（℃）"]>target:
- st.warning("当前MPC组仍未达到全部温控目标；请检查热负荷、设备容量及控制参数。结果按模型原值显示。")
+    return run_all(settings, dt=300)
 
-def chart(col,title,ytitle,targetline=None):
- fig=go.Figure()
- for name,df in results.items():
-  fig.add_trace(go.Scatter(x=df.time_h,y=df[col],name=name,mode="lines",line=dict(color=colors[name],width=3 if name=="双预测MPC" else 2)))
- if targetline is not None:fig.add_hline(y=targetline,line_dash="dash",line_color="#D58B36",annotation_text="控制目标")
- fig.update_layout(title=title,xaxis_title="运行时间（h）",yaxis_title=ytitle,height=360,template="plotly_white",
-  font=dict(color="#203A52"),paper_bgcolor="white",plot_bgcolor="white",hovermode="x unified",
-  legend=dict(orientation="h",y=-.24),margin=dict(l=18,r=18,t=55,b=35),
-  xaxis=dict(gridcolor="#E8EEF4"),yaxis=dict(gridcolor="#E8EEF4"))
- return fig
+with st.spinner("正在进行三组同工况仿真……"):
+    results = calculate(settings)
 
-tabs=st.tabs(["01 综合评价","02 全时段温度表现","03 双预测与控制动作","04 分项能耗与设备","05 PCM状态（内部状态）"])
-with tabs[0]:
- st.subheader("三组48小时（或所选时长）性能对比")
- st.dataframe(summary,use_container_width=True)
- x,y=st.columns(2)
- x.plotly_chart(chart("Tmax_C","电池最高温度全过程","℃",target),use_container_width=True)
- y.plotly_chart(chart("dTmax_C","电池热区最大温差全过程","℃",spread),use_container_width=True)
- x,y=st.columns(2)
- x.plotly_chart(chart("total_energy_kWh","系统累计总能耗","kWh"),use_container_width=True)
- y.plotly_chart(chart("Tmean_C","电池平均温度全过程","℃"),use_container_width=True)
- st.caption("超温累计时间按Tmax超过侧栏设定目标累计；温差超限时间另行统计。")
-with tabs[1]:
- st.subheader("0–48小时完整温度轨迹")
- st.plotly_chart(chart("Tmax_C","最高电池温度","℃",target),use_container_width=True)
- st.plotly_chart(chart("dTmax_C","最大温差","℃",spread),use_container_width=True)
- st.plotly_chart(chart("Tmean_C","平均电池温度","℃"),use_container_width=True)
- st.plotly_chart(chart("Tair_mean_C","舱内等效空气温度","℃"),use_container_width=True)
-with tabs[2]:
- st.subheader("双状态预测参与控制的动作轨迹")
- st.write(f"状态更新60秒；MPC每{update}分钟滚动决策；预测时域{pred}分钟。")
- st.plotly_chart(chart("fan_speed","风机转速指令","额定转速比例"),use_container_width=True)
- st.plotly_chart(chart("ac_fraction","空调压缩机负荷指令","负荷比例"),use_container_width=True)
- st.plotly_chart(chart("valve_pct","风阀开度","%"),use_container_width=True)
- st.plotly_chart(chart("PCM_T_C","PCM平均温度（MPC内部状态）","℃"),use_container_width=True)
- st.plotly_chart(chart("PCM_liquid","PCM等效液相率（MPC内部状态）","0–1"),use_container_width=True)
- st.markdown("**控制逻辑：** 电池温度预测与PCM焓状态共同进入短时域滚动评价；MPC在候选风机转速、空调负荷、风阀开度和区域配风策略中选择综合代价较低的动作。PCM指标用于控制器状态，不列入最终性能评价表。")
-with tabs[3]:
- st.subheader("风机、空调与总能耗")
- st.plotly_chart(chart("fan_energy_kWh","风机累计能耗","kWh"),use_container_width=True)
- st.plotly_chart(chart("ac_energy_kWh","空调累计能耗","kWh"),use_container_width=True)
- st.plotly_chart(chart("valve_energy_kWh","风阀及辅助设备累计能耗","kWh"),use_container_width=True)
- st.plotly_chart(chart("total_energy_kWh","系统总能耗（核心评价指标）","kWh"),use_container_width=True)
- st.plotly_chart(chart("fan_power_W","风机即时功率","W"),use_container_width=True)
- st.plotly_chart(chart("ac_power_W","空调即时输入功率","W"),use_container_width=True)
- st.plotly_chart(chart("fan_runtime_h","风机累计运行时间","h"),use_container_width=True)
- st.plotly_chart(chart("ac_runtime_h","空调累计运行时间","h"),use_container_width=True)
- st.markdown("**设备额定参数**")
- st.dataframe(pd.DataFrame([{"风机型号":k,"额定风量(m³/h)":v["flow"],"额定功率(W)":v["power"],"最大静压(Pa)":v["pressure"]} for k,v in FAN_DB.items()]),use_container_width=True)
- st.dataframe(pd.DataFrame([{"空调型号":k,"额定制冷量(kW)":v["cooling_kw"],"额定输入功率(kW)":v["rated_input_kw"]} for k,v in AC_DB.items()]),use_container_width=True)
-with tabs[4]:
- st.subheader("PCM储热状态预测（控制器内部状态，不作为最终评价指标）")
- st.plotly_chart(chart("PCM_T_C","PCM平均温度","℃"),use_container_width=True)
- st.plotly_chart(chart("PCM_liquid","PCM等效液相率","0–1"),use_container_width=True)
- st.caption("PCM末端液相率和剩余储热能力不列入三组最终评价表，但PCM焓状态持续参与MPC前瞻决策。材料参数仍需与用户指定WT-CPCM文献及实物材料最终核对。")
+summaries = {name: summarize(df, settings) for name, df in results.items()}
+mpc = summaries["双预测MPC"]
+base = summaries["固定送风"]
+threshold = summaries["固定阈值"]
+energy_saving = (threshold["系统总能耗（kWh）"] - mpc["系统总能耗（kWh）"]) / max(1e-9, threshold["系统总能耗（kWh）"]) * 100
+
+st.subheader("同工况三组对照总览")
+k1,k2,k3,k4 = st.columns(4)
+with k1: metric_card("双预测MPC最高温度", f'{mpc["电池最高温度（℃）"]:.2f} ℃', "48小时（或所选时长）仿真")
+with k2: metric_card("双预测MPC最大温差", f'{mpc["最大温差（℃）"]:.2f} ℃', f'控制目标 ≤ {target_spread:.1f} ℃')
+with k3: metric_card("双预测MPC系统总能耗", f'{mpc["系统总能耗（kWh）"]:.2f} kWh', f'相对固定阈值组 {energy_saving:+.1f}%')
+with k4: metric_card("双预测MPC超温累计时间", f'{mpc["超温累计时间（h）"]:.2f} h', f'温度阈值 {target_t:.1f} ℃')
+
+st.markdown('<div class="note">说明：以下为当前简化分区热模型的计算结果，属于仿真演示数据，不是电池舱实测或经CFD验证的性能数据。三组采用相同环境温度、初始温度、负荷时序、设备规格和仿真时长；实际性能结论需用后续标定参数复核。</div>', unsafe_allow_html=True)
+
+c1,c2,c3 = st.columns(3)
+with c1:
+    st.markdown('<div class="group-card"><h3>① 固定送风组</h3><p>风机按固定转速运行、风阀保持固定开度；空调采用固定温控启停，不进行预测优化。</p></div>', unsafe_allow_html=True)
+with c2:
+    st.markdown('<div class="group-card"><h3>② 固定阈值组</h3><p>依据当前最高温度和温差触发风机、空调及风阀动作，不使用未来状态预测。</p></div>', unsafe_allow_html=True)
+with c3:
+    st.markdown('<div class="group-card"><h3>③ 双预测 MPC 组</h3><p>结合电池温度趋势和PCM储热状态进行滚动决策，协调风机、空调及风阀开度。</p></div>', unsafe_allow_html=True)
+
+tab1,tab2,tab3,tab4,tab5 = st.tabs(["① 对照评价","② 温度与温差","③ PCM储热状态","④ 设备控制与能耗","⑤ 设备参数库"])
+
+with tab1:
+    st.subheader("三组评价指标")
+    order = ["固定送风","固定阈值","双预测MPC"]
+    metric_rows = [
+        "电池最高温度（℃）","最大温差（℃）","平均电池温度（℃）",
+        "超温累计时间（h）","温差超限累计时间（h）",
+        "风机累计能耗（kWh）","空调累计能耗（kWh）",
+        "风阀及辅助能耗（kWh）","系统总能耗（kWh）",
+        "风机运行时间（h）","空调运行时间（h）"
+    ]
+    table = pd.DataFrame({name: summaries[name] for name in order}).T[metric_rows].T
+    st.dataframe(table, use_container_width=True)
+    st.caption("最大温差为各时刻八个等效区域最高温度与最低温度之差的全时段最大值；不会将固定组温差人为置零。")
+    st.subheader("系统总能耗构成")
+    fig = go.Figure()
+    for col,label,color in [
+        ("风机累计能耗（kWh）","风机","#347fbd"),
+        ("空调累计能耗（kWh）","空调","#e39a36"),
+        ("风阀及辅助能耗（kWh）","风阀及辅助","#079b8b")
+    ]:
+        fig.add_trace(go.Bar(name=label, x=order, y=[summaries[n][col] for n in order]))
+    fig.update_layout(barmode="stack", template="plotly_white", height=350,
+                      title="三组系统总能耗分项", yaxis_title="能耗（kWh）",
+                      font=dict(color="#243b53"))
+    st.plotly_chart(fig, use_container_width=True)
+
+with tab2:
+    st.plotly_chart(line_chart(results,"Tmax_C","电池舱最高温度变化","温度（℃）",target_t), use_container_width=True)
+    st.plotly_chart(line_chart(results,"Tmean_C","电池舱平均温度变化","温度（℃）"), use_container_width=True)
+    st.plotly_chart(line_chart(results,"dTmax_C","电池组最大温差变化","最大温差（℃）",target_spread), use_container_width=True)
+
+with tab3:
+    st.subheader("WT-CPCM储热状态")
+    st.plotly_chart(line_chart(results,"PCM_T_C","PCM等效温度变化","温度（℃）"), use_container_width=True)
+    st.plotly_chart(line_chart(results,"PCM_liquid","PCM液相率变化","液相率（0–1）"), use_container_width=True)
+    st.plotly_chart(line_chart(results,"PCM_remaining_MJ","PCM剩余潜热储能变化","剩余储热能力（MJ）"), use_container_width=True)
+    st.caption("PCM指标用于展示被动储热状态并参与MPC决策；其数值依赖PCM体积、密度、潜热和热耦合参数。")
+
+with tab4:
+    st.plotly_chart(line_chart(results,"fan_speed","风机转速指令变化","转速比例（0–1）"), use_container_width=True)
+    st.plotly_chart(line_chart(results,"ac_fraction","空调负荷指令变化","负荷比例（0–1）"), use_container_width=True)
+    st.plotly_chart(line_chart(results,"valve_pct","电动风阀开度变化","开度（%）"), use_container_width=True)
+    st.plotly_chart(line_chart(results,"total_energy_kWh","系统累计能耗变化","累计能耗（kWh）"), use_container_width=True)
+    st.plotly_chart(line_chart(results,"fan_energy_kWh","风机累计能耗变化","累计能耗（kWh）"), use_container_width=True)
+    st.plotly_chart(line_chart(results,"ac_energy_kWh","空调累计能耗变化","累计能耗（kWh）"), use_container_width=True)
+
+with tab5:
+    st.subheader("风机参数")
+    st.dataframe(pd.DataFrame(FAN_DB).T, use_container_width=True)
+    st.subheader("空调参数")
+    st.dataframe(pd.DataFrame(AC_DB).T, use_container_width=True)
+    st.subheader("固定 WT-CPCM 材料参数")
+    st.dataframe(pd.DataFrame([
+        ["密度",1100,"kg/m³"],["比热容",1740,"J/(kg·K)"],
+        ["导热系数",3.5,"W/(m·K)"],["相变温区","38–43","℃"],
+        ["相变潜热",120,"kJ/kg"]
+    ],columns=["参数","数值","单位"]),use_container_width=True)
 
 st.divider()
-st.subheader("导出数据与复现")
-export=pd.concat([df.assign(strategy=name) for name,df in results.items()],ignore_index=True)
-st.download_button("下载三组0–48小时逐分钟原始结果CSV",export.to_csv(index=False).encode("utf-8-sig"),
- file_name="280Ah_三策略_风机空调MPC_全过程结果.csv",mime="text/csv",type="primary")
-st.caption("v8.0｜风机＋空调＋风阀｜三策略同工况｜12热区＋24 PCM焓节点｜降阶模型演示，待真实280Ah参数及CFD/实验校准。")
+left,right = st.columns(2)
+with left:
+    st.download_button("下载三组评价指标 CSV",
+        pd.DataFrame(summaries).T.to_csv(index=True).encode("utf-8-sig"),
+        file_name="thermal_management_summary.csv", mime="text/csv", use_container_width=True)
+with right:
+    all_df = pd.concat([df.assign(控制组=name) for name,df in results.items()],ignore_index=True)
+    st.download_button("下载全时序仿真数据 CSV",
+        all_df.to_csv(index=False).encode("utf-8-sig"),
+        file_name="thermal_management_timeseries.csv", mime="text/csv", use_container_width=True)
