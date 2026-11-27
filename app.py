@@ -3,7 +3,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from thermal_engine import Settings, run_all, summarize, FAN_DB, AC_DB
+from thermal_engine import Settings, run_all, summarize, FAN_DB
 
 st.set_page_config(
     page_title="280Ah储能电池舱｜双状态预测与智能热管理",
@@ -91,7 +91,7 @@ def line_chart(results, column, title, y_title, target=None):
 st.markdown("""
 <div class="hero">
   <h1>🔋 280Ah 磷酸铁锂储能电池舱</h1>
-  <p>双状态预测 · WT-CPCM被动储热 · 空冷主动排热 · MPC协同调控</p>
+  <p>双状态预测 · WT-CPCM被动储热 · 风机空冷主动排热 · MPC协同调控</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -106,23 +106,20 @@ with st.sidebar:
     st.subheader("设备配置")
     fan_type = st.selectbox("舱级风机", list(FAN_DB.keys()))
     fans = st.number_input("风机数量", min_value=1, max_value=16, value=4, step=1)
-    ac_type = st.selectbox("空调机组", list(AC_DB.keys()))
     fixed_speed = st.slider("固定送风组风机转速比例", 0.2, 1.0, 0.70, 0.05)
     fixed_valve = st.slider("固定送风组风阀开度（%）", 20, 100, 75, 5) / 100
     st.divider()
     st.subheader("控制目标")
     target_t = st.slider("电池最高温度控制目标（℃）", 32, 45, 38, 1)
     target_spread = st.slider("最大温差控制目标（℃）", 1.0, 5.0, 3.0, 0.1)
-    ac_setpoint = st.slider("空调参考设定温度（℃）", 20, 32, 27, 1)
     st.caption("设备功率与风量采用当前录入的典型规格；热负荷及舱级等效热参数仍需后续标定。")
 
 settings = Settings(
     ambient=float(ambient), initial=float(initial), rate=float(rate),
     duration_h=int(duration), profile=profile,
-    fans=int(fans), fan_type=fan_type, ac_type=ac_type,
+    fans=int(fans), fan_type=fan_type,
     fixed_speed=float(fixed_speed), fixed_valve=float(fixed_valve),
     target_t=float(target_t), target_spread=float(target_spread),
-    ac_setpoint=float(ac_setpoint),
 )
 
 @st.cache_data(show_spinner=False)
@@ -136,24 +133,25 @@ summaries = {name: summarize(df, settings) for name, df in results.items()}
 mpc = summaries["双预测MPC"]
 base = summaries["固定送风"]
 threshold = summaries["固定阈值"]
-energy_saving = (threshold["系统总能耗（kWh）"] - mpc["系统总能耗（kWh）"]) / max(1e-9, threshold["系统总能耗（kWh）"]) * 100
+best_baseline_energy = min(base["系统总能耗（kWh）"], threshold["系统总能耗（kWh）"])
+energy_saving = (best_baseline_energy - mpc["系统总能耗（kWh）"]) / max(1e-9, best_baseline_energy) * 100
 
 st.subheader("同工况三组对照总览")
 k1,k2,k3,k4 = st.columns(4)
 with k1: metric_card("双预测MPC最高温度", f'{mpc["电池最高温度（℃）"]:.2f} ℃', "48小时（或所选时长）仿真")
 with k2: metric_card("双预测MPC最大温差", f'{mpc["最大温差（℃）"]:.2f} ℃', f'控制目标 ≤ {target_spread:.1f} ℃')
-with k3: metric_card("双预测MPC系统总能耗", f'{mpc["系统总能耗（kWh）"]:.2f} kWh', f'相对固定阈值组 {energy_saving:+.1f}%')
+with k3: metric_card("双预测MPC系统总能耗", f'{mpc["系统总能耗（kWh）"]:.2f} kWh', f'相对较低能耗对照组 {energy_saving:+.1f}%')
 with k4: metric_card("双预测MPC超温累计时间", f'{mpc["超温累计时间（h）"]:.2f} h', f'温度阈值 {target_t:.1f} ℃')
 
-st.markdown('<div class="note">说明：以下为简化分区热模型计算结果，不是实测或CFD验证数据。三组采用相同工况和设备参数。双预测MPC通过温度趋势预测、PCM潜热余量判断及分区风量分配，尝试减少不必要的高功率运行；节能幅度和温控效果仍需用真实参数标定复核。</div>', unsafe_allow_html=True)
+st.markdown('<div class="note">说明：以下为简化分区热模型计算结果，不是实测或CFD验证数据。三组采用相同工况和设备参数。三组均采用相同风机与风阀硬件，不配置空调。双预测MPC通过温度趋势预测、PCM潜热余量判断及分区风量分配，尝试减少不必要的高功率运行；换热系数仍需通过CFD或实验标定。</div>', unsafe_allow_html=True)
 
 c1,c2,c3 = st.columns(3)
 with c1:
-    st.markdown('<div class="group-card"><h3>① 固定送风组</h3><p>风机按固定转速运行、风阀保持固定开度；空调采用固定温控启停，不进行预测优化。</p></div>', unsafe_allow_html=True)
+    st.markdown('<div class="group-card"><h3>① 固定送风组</h3><p>风机按固定转速运行、风阀保持固定开度，不进行预测优化。</p></div>', unsafe_allow_html=True)
 with c2:
-    st.markdown('<div class="group-card"><h3>② 固定阈值组</h3><p>依据当前最高温度和温差触发风机、空调及风阀动作，不使用未来状态预测。</p></div>', unsafe_allow_html=True)
+    st.markdown('<div class="group-card"><h3>② 固定阈值组</h3><p>依据当前最高温度和温差分段调节风机与风阀，不使用未来状态预测。</p></div>', unsafe_allow_html=True)
 with c3:
-    st.markdown('<div class="group-card"><h3>③ 双预测 MPC 组</h3><p>结合电池温度趋势和PCM储热状态进行滚动决策，协调风机、空调及风阀开度。</p></div>', unsafe_allow_html=True)
+    st.markdown('<div class="group-card"><h3>③ 双预测 MPC 组</h3><p>结合电池温度趋势、PCM储热状态和分区温差进行滚动决策，协同调节风机与风阀。</p></div>', unsafe_allow_html=True)
 
 tab1,tab2,tab3,tab4,tab5 = st.tabs(["① 对照评价","② 温度与温差","③ PCM储热状态","④ 设备控制与能耗","⑤ 设备参数库"])
 
@@ -163,9 +161,9 @@ with tab1:
     metric_rows = [
         "电池最高温度（℃）","最大温差（℃）","平均电池温度（℃）",
         "超温累计时间（h）","温差超限累计时间（h）",
-        "风机累计能耗（kWh）","空调累计能耗（kWh）",
+        "风机累计能耗（kWh）",
         "风阀及辅助能耗（kWh）","系统总能耗（kWh）",
-        "风机运行时间（h）","空调运行时间（h）"
+        "风机运行时间（h）"
     ]
     table = pd.DataFrame({name: summaries[name] for name in order}).T[metric_rows].T
     st.dataframe(table, use_container_width=True)
@@ -174,7 +172,6 @@ with tab1:
     fig = go.Figure()
     for col,label,color in [
         ("风机累计能耗（kWh）","风机","#347fbd"),
-        ("空调累计能耗（kWh）","空调","#e39a36"),
         ("风阀及辅助能耗（kWh）","风阀及辅助","#079b8b")
     ]:
         fig.add_trace(go.Bar(name=label, x=order, y=[summaries[n][col] for n in order]))
@@ -201,17 +198,13 @@ with tab3:
 
 with tab4:
     st.plotly_chart(line_chart(results,"fan_speed","风机转速指令变化","转速比例（0–1）"), use_container_width=True, theme=None)
-    st.plotly_chart(line_chart(results,"ac_fraction","空调负荷指令变化","负荷比例（0–1）"), use_container_width=True, theme=None)
     st.plotly_chart(line_chart(results,"valve_pct","电动风阀开度变化","开度（%）"), use_container_width=True, theme=None)
     st.plotly_chart(line_chart(results,"total_energy_kWh","系统累计能耗变化","累计能耗（kWh）"), use_container_width=True, theme=None)
     st.plotly_chart(line_chart(results,"fan_energy_kWh","风机累计能耗变化","累计能耗（kWh）"), use_container_width=True, theme=None)
-    st.plotly_chart(line_chart(results,"ac_energy_kWh","空调累计能耗变化","累计能耗（kWh）"), use_container_width=True, theme=None)
 
 with tab5:
     st.subheader("风机参数")
     st.dataframe(pd.DataFrame(FAN_DB).T, use_container_width=True)
-    st.subheader("空调参数")
-    st.dataframe(pd.DataFrame(AC_DB).T, use_container_width=True)
     st.subheader("固定 WT-CPCM 材料参数")
     st.dataframe(pd.DataFrame([
         ["密度",1100,"kg/m³"],["比热容",1740,"J/(kg·K)"],
