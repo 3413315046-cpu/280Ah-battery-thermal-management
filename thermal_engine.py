@@ -112,10 +112,10 @@ def _ac_power(s, fraction):
 
 def _control(mode, s, tmax, spread, pcm_liquid, slope, old_fan, old_ac):
     """
-    三组采用相同风机、空调和风阀硬件：
-    固定送风：固定风机转速，温度达到阈值后启用空调；
-    固定阈值：仅依据当前温度/温差分段调节；
-    双预测MPC：依据温度趋势、环境温度、负荷倍率、PCM储热状态预测调节。
+    三组采用相同的风机、空调和风阀硬件。
+    固定送风：固定风机/风阀，达到高温阈值后启用空调。
+    固定阈值：依据当前温度和温差分段调节，不使用预测信息。
+    双预测MPC：采用节能优先的预测分级控制，避免空调过早介入。
     """
     if mode == "固定送风":
         fan = _clip(s.fixed_speed)
@@ -128,27 +128,29 @@ def _control(mode, s, tmax, spread, pcm_liquid, slope, old_fan, old_ac):
     else:
         horizon = max(1, s.prediction_minutes) / 60.0
         load_now = _heat_load(s, 0.0)
-        predicted = tmax + max(-0.03, slope) * horizon + 0.18 * load_now
-        pcm_risk = max(0.0, pcm_liquid - 0.55) * 1.5
+
+        # 双状态预测：温度变化趋势与PCM潜热余量共同形成风险指标。
+        predicted = tmax + max(-0.03, slope) * horizon + 0.10 * load_now
+        pcm_risk = max(0.0, pcm_liquid - 0.55) * 1.2
         risk = predicted + pcm_risk
 
-        # 风机负责高效基础排热，并根据环境温度、负荷倍率进行前馈补偿。
+        # 节能优先：风机承担基础排热，按环境温度、倍率和温差作小幅前馈补偿。
         fan = _clip(
-            0.32
-            + 0.055 * max(0.0, s.ambient - 30.0)
-            + 0.12 * max(0.0, s.rate - 1.0)
-            + 0.01 * max(0.0, risk - 34.0)
-            + 0.05 * max(0.0, spread - 1.0),
-            0.18, 0.85
+            0.30
+            + 0.03 * max(0.0, s.ambient - 30.0)
+            + 0.08 * max(0.0, s.rate - 1.0)
+            + 0.04 * max(0.0, risk - 35.0)
+            + 0.10 * max(0.0, spread - 1.0),
+            0.12, 0.82
         )
 
-        # 空调作为二级调节执行器：预测风险接近温度约束时才介入，
-        # 限制最大负荷，避免空调长时间高功率运行。
-        ac = _clip(0.03 * max(0.0, risk - 35.0), 0.0, 0.25)
+        # 空调延后至预测风险接近高温区时再介入，采用小负荷连续补偿，
+        # 防止低风险阶段出现空调长时间高能耗运行。
+        ac = _clip(0.04 * max(0.0, risk - 39.5), 0.0, 0.25)
 
-        # 风机与空调均设置变化率约束，避免执行器频繁突变。
+        # 执行器变化率约束，减少风机和空调频繁大幅动作。
         fan = float(np.clip(fan, old_fan - 0.15, old_fan + 0.15))
-        ac = float(np.clip(ac, old_ac - 0.05, old_ac + 0.05))
+        ac = float(np.clip(ac, old_ac - 0.04, old_ac + 0.04))
         valve = _clip(0.65 + 0.12 * max(0.0, spread - 1.0), 0.65, 1.0)
 
     return _clip(fan), _clip(ac), _clip(valve)

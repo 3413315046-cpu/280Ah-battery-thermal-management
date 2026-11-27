@@ -142,10 +142,10 @@ st.subheader("同工况三组对照总览")
 k1,k2,k3,k4 = st.columns(4)
 with k1: metric_card("双预测MPC最高温度", f'{mpc["电池最高温度（℃）"]:.2f} ℃', "48小时（或所选时长）仿真")
 with k2: metric_card("双预测MPC最大温差", f'{mpc["最大温差（℃）"]:.2f} ℃', f'控制目标 ≤ {target_spread:.1f} ℃')
-with k3: metric_card("双预测MPC系统总能耗", f'{mpc["系统总能耗（kWh）"]:.2f} kWh', f'相对较低能耗对照组 {energy_saving:+.1f}%')
+with k3: metric_card("双预测MPC系统总能耗", f'{mpc["系统总能耗（kWh）"]:.2f} kWh', f'相对最低能耗对照组 {energy_saving:+.1f}%')
 with k4: metric_card("双预测MPC超温累计时间", f'{mpc["超温累计时间（h）"]:.2f} h', f'温度阈值 {target_t:.1f} ℃')
 
-st.markdown('<div class="note">说明：以下为简化分区热模型计算结果，不是实测或CFD验证数据。三组采用相同工况和设备参数。三组均采用相同风机、空调与风阀硬件。双预测MPC通过温度趋势、环境温度、负荷倍率及PCM潜热余量进行前馈预测，优先使用风机基础排热，仅在预测风险升高时调用空调；换热系数仍需通过CFD或实验标定。</div>', unsafe_allow_html=True)
+st.markdown('<div class="note">说明：以下为简化分区热模型计算结果，不是实测或CFD验证数据。三组采用相同工况和设备参数。三组均采用相同风机、空调与风阀硬件。双预测MPC采用节能优先的分级控制：风机承担基础排热，并按环境温度、倍率和温差前馈补偿；只有预测温度风险接近高温区时才调用空调，避免空调过早介入。空调保留为辅助制冷执行器；换热系数仍需通过CFD或实验标定。</div>', unsafe_allow_html=True)
 
 c1,c2,c3 = st.columns(3)
 with c1:
@@ -153,7 +153,7 @@ with c1:
 with c2:
     st.markdown('<div class="group-card"><h3>② 固定阈值组</h3><p>依据当前最高温度和温差分段调节风机、空调与风阀，不使用未来状态预测。</p></div>', unsafe_allow_html=True)
 with c3:
-    st.markdown('<div class="group-card"><h3>③ 双预测 MPC 组</h3><p>结合电池温度趋势、环境温度、负荷倍率、PCM储热状态和分区温差进行滚动决策，协同调节风机、空调与风阀。</p></div>', unsafe_allow_html=True)
+    st.markdown('<div class="group-card"><h3>③ 双预测 MPC 组</h3><p>结合电池温度趋势、环境温度、负荷倍率、PCM储热状态和分区温差进行滚动决策；风机承担基础排热，空调仅在预测风险接近高温区时辅助介入，并协同调节风阀。</p></div>', unsafe_allow_html=True)
 
 tab1,tab2,tab3,tab4,tab5 = st.tabs(["① 对照评价","② 温度与温差","③ PCM储热状态","④ 设备控制与能耗","⑤ 设备参数库"])
 
@@ -230,3 +230,4 @@ with right:
     st.download_button("下载全时序仿真数据 CSV",
         all_df.to_csv(index=False).encode("utf-8-sig"),
         file_name="thermal_management_timeseries.csv", mime="text/csv", use_container_width=True)
+
